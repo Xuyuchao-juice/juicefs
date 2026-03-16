@@ -205,7 +205,7 @@ type batchCloneResult struct {
 }
 
 func appendUGQuotaDelta(userGroupQuotas *[]userGroupQuotaDelta, parent Ino, uid, gid uint32, nlink uint32, typ uint8, length uint64) {
-	if userGroupQuotas == nil || parent.IsTrash() {
+	if userGroupQuotas == nil {
 		return
 	}
 	var entrySpace int64
@@ -1671,11 +1671,6 @@ func (m *baseMeta) Unlink(ctx Context, parent Ino, name string, skipCheckTrash .
 		m.updateDirStat(ctx, parent, -int64(diffLength), -align4K(diffLength), -1)
 		if !parent.IsTrash() {
 			m.updateDirQuota(ctx, parent, -align4K(diffLength), -1)
-			if attr.Typ == TypeFile && attr.Nlink > 0 {
-				m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, 0, -1)
-			} else {
-				m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, -align4K(diffLength), -1)
-			}
 		}
 	}
 	return err
@@ -1705,10 +1700,9 @@ func (m *baseMeta) Rmdir(ctx Context, parent Ino, name string, skipCheckTrash ..
 			m.parentMu.Lock()
 			delete(m.dirParents, inode)
 			m.parentMu.Unlock()
+			m.updateDirQuota(ctx, parent, -align4K(0), -1)
 		}
 		m.updateDirStat(ctx, parent, 0, -align4K(0), -1)
-		m.updateDirQuota(ctx, parent, -align4K(0), -1)
-		m.updateUserGroupQuota(ctx, oldAttr.Uid, oldAttr.Gid, -align4K(0), -1)
 	}
 	return st
 }
@@ -1727,9 +1721,6 @@ func (m *baseMeta) BatchUnlink(ctx Context, parent Ino, entries []*Entry, count 
 		m.updateDirStat(ctx, parent, length, space, inodes)
 		if !parent.IsTrash() {
 			m.updateDirQuota(ctx, parent, space, inodes)
-			for _, quota := range userGroupQuotas {
-				m.updateUserGroupQuota(ctx, quota.Uid, quota.Gid, quota.Space, quota.Inodes)
-			}
 		}
 		if count != nil && len(entries) > 0 {
 			atomic.AddUint64(count, uint64(len(entries)))
@@ -1848,9 +1839,6 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 					m.updateDirQuota(ctx, parentDst, space, inodes)
 				}
 			}
-			if flags&RenameRestore != 0 && parentSrc.IsTrash() {
-				m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, align4K(diffLength), 1)
-			}
 		}
 		if *tinode > 0 && flags != RenameExchange {
 			diffLength = 0
@@ -1865,7 +1853,6 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			if quotaDst > 0 {
 				m.updateDirQuota(ctx, parentDst, -align4K(diffLength), -1)
 			}
-			m.updateUserGroupQuota(ctx, tattr.Uid, tattr.Gid, -align4K(diffLength), -1)
 		}
 	}
 	return st

@@ -776,6 +776,12 @@ func (m *baseMeta) scanGlobalUserGroupUsage(ctx Context) (map[uint64]*Summary, m
 	visitedDirs := make(map[Ino]bool)
 
 	dirQueue := []Ino{RootInode}
+	if m.getFormat().TrashDays > 0 {
+		var trashAttr Attr
+		if st := m.en.doGetAttr(ctx, TrashInode, &trashAttr); st == 0 {
+			dirQueue = append(dirQueue, TrashInode)
+		}
+	}
 
 	for len(dirQueue) > 0 {
 		currentDir := dirQueue[0]

@@ -1952,6 +1952,11 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 			m.fileDeleted(opened, parent.IsTrash(), n.Inode, n.Length)
 		}
 		m.updateStats(newSpace, newInode)
+		if n.Type == TypeFile && n.Nlink > 0 {
+			m.updateUserGroupQuota(ctx, n.Uid, n.Gid, 0, -1)
+		} else {
+			m.updateUserGroupQuota(ctx, n.Uid, n.Gid, newSpace, newInode)
+		}
 	}
 	if err == nil && attr != nil {
 		m.parseAttr(&n, attr)
@@ -1966,6 +1971,7 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, attr
 			return st
 		}
 	}
+	var n node
 	err := m.txn(func(s *xorm.Session) error {
 		var pn = node{Inode: parent}
 		ok, err := s.Get(&pn)
@@ -2008,7 +2014,7 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, attr
 		if pinode != nil {
 			*pinode = e.Inode
 		}
-		var n = node{Inode: e.Inode}
+		n = node{Inode: e.Inode}
 		ok, err = s.ForUpdate().Get(&n)
 		if err != nil {
 			return err
@@ -2076,6 +2082,7 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, attr
 	})
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
+		m.updateUserGroupQuota(ctx, n.Uid, n.Gid, -align4K(0), -1)
 	}
 	return errno(err)
 }
@@ -2462,6 +2469,9 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			m.fileDeleted(opened, false, dino, dn.Length)
 		}
 		m.updateStats(newSpace, newInode)
+		if newSpace != 0 || newInode != 0 {
+			m.updateUserGroupQuota(ctx, dn.Uid, dn.Gid, newSpace, newInode)
+		}
 	}
 	return errno(err)
 }
@@ -2909,6 +2919,9 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 		m.fileDeleted(info.opened, parent.IsTrash(), inode, info.length)
 	}
 	m.updateStats(totalSpace, totalInodes)
+	for _, quota := range *userGroupQuotas {
+		m.updateUserGroupQuota(ctx, quota.Uid, quota.Gid, quota.Space, quota.Inodes)
+	}
 	*length = totalLength
 	*space = totalSpace
 	*inodes = totalInodes

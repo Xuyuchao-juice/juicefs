@@ -1430,6 +1430,11 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 			m.fileDeleted(opened, parent.IsTrash(), inode, attr.Length)
 		}
 		m.updateStats(newSpace, newInode)
+		if _type == TypeFile && attr.Nlink > 0 {
+			m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, 0, -1)
+		} else {
+			m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, newSpace, newInode)
+		}
 	}
 	return errno(err)
 }
@@ -1701,6 +1706,9 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 			m.fileDeleted(info.opened, parent.IsTrash(), inode, info.length)
 		}
 		m.updateStats(batchSpace, batchInodes)
+		for _, quota := range batchUserGroupQuotas {
+			m.updateUserGroupQuota(ctx, quota.Uid, quota.Gid, quota.Space, quota.Inodes)
+		}
 
 		totalLength += batchLength
 		totalSpace += batchSpace
@@ -1816,6 +1824,9 @@ func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldA
 	}, parent)
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
+		if oldAttr != nil {
+			m.updateUserGroupQuota(ctx, oldAttr.Uid, oldAttr.Gid, -align4K(0), -1)
+		}
 	}
 	return errno(err)
 }
@@ -2088,6 +2099,9 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			m.fileDeleted(opened, false, dino, tattr.Length)
 		}
 		m.updateStats(newSpace, newInode)
+		if newSpace != 0 || newInode != 0 {
+			m.updateUserGroupQuota(ctx, tattr.Uid, tattr.Gid, newSpace, newInode)
+		}
 	}
 	return errno(err)
 }
