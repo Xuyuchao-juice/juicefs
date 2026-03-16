@@ -1292,7 +1292,7 @@ func (m *kvMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 	}, parent))
 }
 
-func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, userGroupQuota *userGroupQuotaDelta, skipCheckTrash ...bool) syscall.Errno {
+func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skipCheckTrash ...bool) syscall.Errno {
 	var trash Ino
 	if !(len(skipCheckTrash) == 1 && skipCheckTrash[0]) {
 		if st := m.checkTrash(parent, &trash); st != 0 {
@@ -1430,9 +1430,6 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, user
 			m.fileDeleted(opened, parent.IsTrash(), inode, attr.Length)
 		}
 		m.updateStats(newSpace, newInode)
-	}
-	if err == nil && userGroupQuota != nil {
-		*userGroupQuota = newUnlinkUGQuotaDelta(attr.Uid, attr.Gid, attr.Nlink, attr.Typ, attr.Length, trash > 0)
 	}
 	return errno(err)
 }
@@ -1684,7 +1681,7 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 				if info.attr.Parent == 0 && info.attr.Nlink > 0 {
 					tx.incrBy(m.parentKey(info.inode, parent), -1)
 				}
-				appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length, info.trash > 0)
+				appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
 			}
 
 			// Update parent directory if needed
