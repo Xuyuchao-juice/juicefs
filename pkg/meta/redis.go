@@ -1762,14 +1762,14 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
 		var batchFsSpace, batchFsInodes int64
-		var batchUserGroupQuotas []userGroupQuotaDelta
+		var batchUserGroupQuotas map[uint64]*userGroupQuotaDelta
 		var delNodes map[Ino]*dNode
 		watchKeys := []string{m.inodeKey(parent), m.entryKey(parent)}
 
 		err := m.txn(ctx, func(tx *redis.Tx) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
-			batchUserGroupQuotas = make([]userGroupQuotaDelta, 0, len(batch))
+			batchUserGroupQuotas = make(map[uint64]*userGroupQuotaDelta)
 			delNodes = make(map[Ino]*dNode)
 
 			rs, err := tx.Get(ctx, m.inodeKey(parent)).Result()
@@ -1969,7 +1969,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 								batchFsInodes--
 								stats[m.usedSpaceKey()] -= align4K(info.attr.Length)
 								stats[m.totalInodesKey()]--
-								appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
+								appendUGQuotaDelta(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
 							}
 						case TypeSymlink:
 							keys = append(keys, m.symKey(info.inode))
@@ -1980,7 +1980,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 							batchFsInodes--
 							stats[m.usedSpaceKey()] -= align4K(0)
 							stats[m.totalInodesKey()]--
-							appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
+							appendUGQuotaDelta(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
 						}
 						keys = append(keys, m.xattrKey(info.inode))
 						if info.attr.Parent == 0 {
@@ -2190,7 +2190,9 @@ func (m *redisMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, o
 	}, m.inodeKey(parent), m.entryKey(parent))
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
-		m.updateUserGroupQuota(ctx, oldAttr.Uid, oldAttr.Gid, -align4K(0), -1)
+		if oldAttr != nil {
+			m.updateUserGroupQuota(ctx, oldAttr.Uid, oldAttr.Gid, -align4K(0), -1)
+		}
 	}
 	return errno(err)
 }

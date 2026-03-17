@@ -813,19 +813,24 @@ func (m *baseMeta) scanGlobalUserGroupUsage(ctx Context) (map[uint64]*Summary, m
 			}
 
 			var space int64
+			var inodes int64
 			if e.Attr.Typ == TypeFile {
 				if e.Attr.Nlink > 1 {
 					if processedFiles[e.Inode] {
 						space = 0
+						inodes = 0
 					} else {
 						space = align4K(e.Attr.Length)
+						inodes = 1
 						processedFiles[e.Inode] = true
 					}
 				} else {
 					space = align4K(e.Attr.Length)
+					inodes = 1
 				}
 			} else if e.Attr.Typ == TypeDirectory {
 				space = align4K(0)
+				inodes = 1
 				userUsage[uid].Dirs++
 				groupUsage[gid].Dirs++
 				if !visitedDirs[e.Inode] {
@@ -834,9 +839,9 @@ func (m *baseMeta) scanGlobalUserGroupUsage(ctx Context) (map[uint64]*Summary, m
 			}
 
 			userUsage[uid].Size += uint64(space)
-			userUsage[uid].Files++
+			userUsage[uid].Files += uint64(inodes)
 			groupUsage[gid].Size += uint64(space)
-			groupUsage[gid].Files++
+			groupUsage[gid].Files += uint64(inodes)
 
 		}
 	}

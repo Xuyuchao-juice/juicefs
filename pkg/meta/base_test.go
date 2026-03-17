@@ -2489,7 +2489,6 @@ func testReadOnly(t *testing.T, m Meta) {
 func testConcurrentDir(t *testing.T, m Meta) {
 	ctx := Background()
 	var g sync.WaitGroup
-	var err error
 	format, err := m.Load(false)
 	if err != nil {
 		t.Fatalf("load format failed: %s", err)
@@ -5115,16 +5114,15 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		t.Fatalf("User group quota not found after batch unlink")
 	}
 
-	// After the new strategy, files moved to trash do not decrease user/group quota
-	// Only files permanently deleted from trash decrease quota
-	expectedInodeDecrease := int64(0)
+	// testConfig() uses TrashDays=0, so batch unlink permanently deletes files and decreases quota
+	expectedInodeDecrease := int64(len(fileNames))
 	actualInodeDecrease := ugQuotaBefore.UsedInodes - ugQuotaAfter.UsedInodes
 
 	if actualInodeDecrease != expectedInodeDecrease {
 		t.Fatalf("User group quota inode decrease mismatch: expected %d, got %d", expectedInodeDecrease, actualInodeDecrease)
 	}
 
-	expectedSpaceDecrease := int64(0)
+	expectedSpaceDecrease := align4K(fileSize) * int64(len(fileNames))
 	actualSpaceDecrease := ugQuotaBefore.UsedSpace - ugQuotaAfter.UsedSpace
 
 	if actualSpaceDecrease != expectedSpaceDecrease {

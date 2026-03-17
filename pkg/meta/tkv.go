@@ -1479,13 +1479,13 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
 		var batchFsSpace, batchFsInodes int64
-		var batchUserGroupQuotas []userGroupQuotaDelta
+		var batchUserGroupQuotas map[uint64]*userGroupQuotaDelta
 		var delNodes map[Ino]*dNode
 
 		err := m.txn(ctx, func(tx *kvTxn) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
-			batchUserGroupQuotas = make([]userGroupQuotaDelta, 0, len(batch))
+			batchUserGroupQuotas = make(map[uint64]*userGroupQuotaDelta)
 			delNodes = make(map[Ino]*dNode)
 			pbuf := tx.get(m.inodeKey(parent))
 			if pbuf == nil {
@@ -1649,7 +1649,7 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								tx.delete(m.inodeKey(info.inode))
 								batchFsSpace -= align4K(info.attr.Length)
 								batchFsInodes--
-								appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
+								appendUGQuotaDelta(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
 							}
 						case TypeSymlink:
 							tx.delete(m.symKey(info.inode))
@@ -1658,7 +1658,7 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 							tx.delete(m.inodeKey(info.inode))
 							batchFsSpace -= align4K(0)
 							batchFsInodes--
-							appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
+							appendUGQuotaDelta(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
 						}
 						// Delete xattrs and parent keys
 						tx.deleteKeys(m.xattrKey(info.inode, ""))
@@ -2084,9 +2084,7 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			m.fileDeleted(opened, false, dino, tattr.Length)
 		}
 		m.updateStats(newSpace, newInode)
-		if newSpace != 0 || newInode != 0 {
-			m.updateUserGroupQuota(ctx, tattr.Uid, tattr.Gid, newSpace, newInode)
-		}
+		m.updateUserGroupQuota(ctx, tattr.Uid, tattr.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }

@@ -2626,7 +2626,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 		entries = entries[batchSize:]
 		var batchFsSpace, batchFsInodes int64
 		var batchDirLength, batchDirSpace, batchDirInodes int64
-		batchUserGroupQuotas := make([]userGroupQuotaDelta, 0, len(batch))
+		batchUserGroupQuotas := make(map[uint64]*userGroupQuotaDelta)
 		err := m.txn(func(s *xorm.Session) error {
 			pn := node{Inode: parent}
 			ok, err := s.Get(&pn)
@@ -2799,7 +2799,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								nodesDel = append(nodesDel, info.e.Inode)
 								batchFsSpace -= entrySpace
 								batchFsInodes--
-								appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
+								appendUGQuotaDelta(batchUserGroupQuotas, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
 							}
 						case TypeSymlink:
 							// symlink: record for batched delete from symlink table
@@ -2812,7 +2812,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								entrySpace = align4K(0)
 								batchFsSpace -= entrySpace
 								batchFsInodes--
-								appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
+								appendUGQuotaDelta(batchUserGroupQuotas, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
 							}
 						}
 						xattrsDel = append(xattrsDel, info.e.Inode)
@@ -5124,7 +5124,7 @@ func (m *dbMeta) doBatchClone(ctx Context, srcParent Ino, dstParent Ino, entries
 
 	err := m.txn(func(s *xorm.Session) error {
 		nowNano := time.Now().UnixNano()
-		*result = batchCloneResult{userGroupQuotas: make([]userGroupQuotaDelta, 0, len(entries))}
+		*result = batchCloneResult{userGroupQuotas: make(map[uint64]*userGroupQuotaDelta)}
 
 		pn, err := m.validateCloneTarget(ctx, s, dstParent)
 		if err != nil {
@@ -5196,10 +5196,16 @@ func (m *dbMeta) doBatchClone(ctx Context, srcParent Ino, dstParent Ino, entries
 			result.length += int64(sn.Length)
 			result.space += entrySpace
 			result.inodes++
-			result.userGroupQuotas = append(result.userGroupQuotas, userGroupQuotaDelta{
-				Uid: info.dstNode.Uid, Gid: info.dstNode.Gid,
-				Space: entrySpace, Inodes: 1,
-			})
+			key := ugKey(info.dstNode.Uid, info.dstNode.Gid)
+			if delta, ok := result.userGroupQuotas[key]; ok {
+				delta.Space += entrySpace
+				delta.Inodes++
+			} else {
+				result.userGroupQuotas[key] = &userGroupQuotaDelta{
+					Uid: info.dstNode.Uid, Gid: info.dstNode.Gid,
+					Space: entrySpace, Inodes: 1,
+				}
+			}
 		}
 
 		if err := mustInsert(s, nodesIns...); err != nil {

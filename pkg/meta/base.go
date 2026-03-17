@@ -201,17 +201,20 @@ type batchCloneResult struct {
 	length          int64
 	space           int64
 	inodes          int64
-	userGroupQuotas []userGroupQuotaDelta
+	userGroupQuotas map[uint64]*userGroupQuotaDelta
 }
 
 type batchUnlinkResult struct {
-	length          int64
-	space           int64
-	inodes          int64
-	userGroupQuotas []userGroupQuotaDelta
+	length int64
+	space  int64
+	inodes int64
 }
 
-func appendUGQuotaDelta(userGroupQuotas *[]userGroupQuotaDelta, parent Ino, uid, gid uint32, nlink uint32, typ uint8, length uint64) {
+func ugKey(uid, gid uint32) uint64 {
+	return (uint64(uid) << 32) | uint64(gid)
+}
+
+func appendUGQuotaDelta(userGroupQuotas map[uint64]*userGroupQuotaDelta, uid, gid uint32, nlink uint32, typ uint8, length uint64) {
 	if userGroupQuotas == nil || nlink != 0 {
 		return
 	}
@@ -219,12 +222,18 @@ func appendUGQuotaDelta(userGroupQuotas *[]userGroupQuotaDelta, parent Ino, uid,
 	if typ == TypeFile {
 		entrySpace = -align4K(length)
 	}
-	*userGroupQuotas = append(*userGroupQuotas, userGroupQuotaDelta{
-		Uid:    uid,
-		Gid:    gid,
-		Space:  entrySpace,
-		Inodes: -1,
-	})
+	key := ugKey(uid, gid)
+	if delta, ok := userGroupQuotas[key]; ok {
+		delta.Space += entrySpace
+		delta.Inodes--
+	} else {
+		userGroupQuotas[key] = &userGroupQuotaDelta{
+			Uid:    uid,
+			Gid:    gid,
+			Space:  entrySpace,
+			Inodes: -1,
+		}
+	}
 }
 
 func newSymlinkCache(cap int32) *symlinkCache {
