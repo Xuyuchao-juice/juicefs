@@ -2592,16 +2592,6 @@ func (m *dbMeta) doReaddir(ctx Context, inode Ino, plus uint8, entries *[]*Entry
 	}))
 }
 
-func recordBatchUnlinkDirStats(n *node, result *batchUnlinkResult) {
-	if n.Type == TypeFile {
-		result.length -= int64(n.Length)
-		result.space -= align4K(n.Length)
-	} else {
-		result.space -= align4K(0)
-	}
-	result.inodes--
-}
-
 func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *batchUnlinkResult, skipCheckTrash ...bool) syscall.Errno {
 	if len(entries) == 0 {
 		return 0
@@ -2635,6 +2625,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 		batch := entries[:batchSize]
 		entries = entries[batchSize:]
 		var batchFsSpace, batchFsInodes int64
+		var batchDirLength, batchDirSpace, batchDirInodes int64
 		batchUserGroupQuotas := make([]userGroupQuotaDelta, 0, len(batch))
 		err := m.txn(func(s *xorm.Session) error {
 			pn := node{Inode: parent}
@@ -2777,18 +2768,16 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 			for _, info := range entryInfos {
 				edgesDel = append(edgesDel, edge{Parent: parent, Name: info.e.Name})
 				if info.n.Inode != 0 {
-					recordBatchUnlinkDirStats(info.n, result)
+					if info.n.Type == TypeFile {
+						batchDirLength -= int64(info.n.Length)
+						batchDirSpace -= align4K(info.n.Length)
+					} else {
+						batchDirSpace -= align4K(0)
+					}
+					batchDirInodes--
 				}
 				if !visited[info.n.Inode] {
-					if info.trash > 0 {
-						if info.n.Nlink == 0 {
-							info.n.Nlink = 1
-						}
-						// Moving to trash is a rename-like operation: keep the inode and refresh metadata.
-						if _, err := s.Cols("nlink", "ctime", "ctimensec", "parent").Update(info.n, &node{Inode: info.n.Inode}); err != nil {
-							return err
-						}
-					} else if info.n.Nlink > 0 {
+					if info.n.Nlink > 0 {
 						// inode still referenced somewhere: only update metadata
 						if _, err := s.Cols("nlink", "ctime", "ctimensec", "parent").Update(info.n, &node{Inode: info.n.Inode}); err != nil {
 							return err
@@ -2796,11 +2785,10 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 					} else {
 						// last link removed: prepare to delete inode and related rows
 						var entrySpace int64
-						needRecordStats := false
 						switch info.n.Type {
 						case TypeFile:
 							entrySpace = align4K(info.n.Length)
-							if delNodes[info.n.Inode].opened {
+							if dnode, ok := delNodes[info.n.Inode]; ok && dnode.opened {
 								sustainedIns = append(sustainedIns, &sustained{Sid: m.sid, Inode: info.e.Inode})
 								if _, err := s.Cols("nlink", "ctime", "ctimensec").Update(info.n, &node{Inode: info.n.Inode}); err != nil {
 									return err
@@ -2809,7 +2797,8 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								// regular, un-opened file: add to delfile and delete inode later
 								delfilesIns = append(delfilesIns, &delfile{info.e.Inode, info.n.Length, nowUnix})
 								nodesDel = append(nodesDel, info.e.Inode)
-								needRecordStats = true
+								batchFsSpace -= entrySpace
+								batchFsInodes--
 								appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
 							}
 						case TypeSymlink:
@@ -2821,13 +2810,10 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 							nodesDel = append(nodesDel, info.e.Inode)
 							if info.n.Type != TypeFile {
 								entrySpace = align4K(0)
-								needRecordStats = true
+								batchFsSpace -= entrySpace
+								batchFsInodes--
 								appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
 							}
-						}
-						if needRecordStats {
-							batchFsSpace -= entrySpace
-							batchFsInodes--
 						}
 						xattrsDel = append(xattrsDel, info.e.Inode)
 					}
@@ -2918,6 +2904,9 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 			return errno(err)
 		}
 
+		result.length += batchDirLength
+		result.space += batchDirSpace
+		result.inodes += batchDirInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range batchUserGroupQuotas {
 			m.updateUserGroupQuota(ctx, q.Uid, q.Gid, q.Space, q.Inodes)

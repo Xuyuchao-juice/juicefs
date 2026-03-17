@@ -212,24 +212,18 @@ type batchUnlinkResult struct {
 }
 
 func appendUGQuotaDelta(userGroupQuotas *[]userGroupQuotaDelta, parent Ino, uid, gid uint32, nlink uint32, typ uint8, length uint64) {
-	if userGroupQuotas == nil {
+	if userGroupQuotas == nil || nlink != 0 {
 		return
 	}
-	var entrySpace int64
-	var entryInodes int64
-	if nlink == 0 {
-		if typ == TypeFile {
-			entrySpace = -align4K(length)
-		} else {
-			entrySpace = -align4K(0)
-		}
-		entryInodes = -1
+	entrySpace := -align4K(0)
+	if typ == TypeFile {
+		entrySpace = -align4K(length)
 	}
 	*userGroupQuotas = append(*userGroupQuotas, userGroupQuotaDelta{
 		Uid:    uid,
 		Gid:    gid,
 		Space:  entrySpace,
-		Inodes: entryInodes,
+		Inodes: -1,
 	})
 }
 
@@ -1611,7 +1605,6 @@ func (m *baseMeta) Link(ctx Context, inode, parent Ino, name string, attr *Attr)
 	if err == 0 {
 		m.updateDirStat(ctx, parent, int64(attr.Length), align4K(attr.Length), 1)
 		m.updateDirQuota(ctx, parent, align4K(attr.Length), 1)
-		m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, 0, 0)
 	}
 	return err
 }
