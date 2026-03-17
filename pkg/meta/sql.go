@@ -1952,11 +1952,7 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 			m.fileDeleted(opened, parent.IsTrash(), n.Inode, n.Length)
 		}
 		m.updateStats(newSpace, newInode)
-		if n.Type == TypeFile && n.Nlink > 0 {
-			m.updateUserGroupQuota(ctx, n.Uid, n.Gid, 0, -1)
-		} else {
-			m.updateUserGroupQuota(ctx, n.Uid, n.Gid, newSpace, newInode)
-		}
+		m.updateUserGroupQuota(ctx, n.Uid, n.Gid, newSpace, newInode)
 	}
 	if err == nil && attr != nil {
 		m.parseAttr(&n, attr)
@@ -2596,19 +2592,17 @@ func (m *dbMeta) doReaddir(ctx Context, inode Ino, plus uint8, entries *[]*Entry
 	}))
 }
 
-func recordGlobalDeletionStats(
-	n *node,
-	entrySpace int64,
-	totalLength *int64,
-	totalSpace *int64,
-	totalInodes *int64,
-) {
-	*totalLength -= int64(n.Length)
-	*totalSpace -= entrySpace
-	*totalInodes--
+func recordBatchUnlinkDirStats(n *node, result *batchUnlinkResult) {
+	if n.Type == TypeFile {
+		result.length -= int64(n.Length)
+		result.space -= align4K(n.Length)
+	} else {
+		result.space -= align4K(0)
+	}
+	result.inodes--
 }
 
-func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length *int64, space *int64, inodes *int64, userGroupQuotas *[]userGroupQuotaDelta, skipCheckTrash ...bool) syscall.Errno {
+func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *batchUnlinkResult, skipCheckTrash ...bool) syscall.Errno {
 	if len(entries) == 0 {
 		return 0
 	}
@@ -2632,10 +2626,6 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 		length uint64
 	}
 	delNodes := make(map[Ino]*dNode)
-	var totalLength, totalSpace, totalInodes int64
-	if userGroupQuotas != nil {
-		*userGroupQuotas = make([]userGroupQuotaDelta, 0, len(entries))
-	}
 
 	batchSize := m.getTxnBatchNum()
 	for len(entries) > 0 {
@@ -2644,6 +2634,8 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 		}
 		batch := entries[:batchSize]
 		entries = entries[batchSize:]
+		var batchFsSpace, batchFsInodes int64
+		batchUserGroupQuotas := make([]userGroupQuotaDelta, 0, len(batch))
 		err := m.txn(func(s *xorm.Session) error {
 			pn := node{Inode: parent}
 			ok, err := s.Get(&pn)
@@ -2784,8 +2776,19 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 			// walk each edge to decide whether to move to trash, decrement nlink or delete inode & xattrs
 			for _, info := range entryInfos {
 				edgesDel = append(edgesDel, edge{Parent: parent, Name: info.e.Name})
+				if info.n.Inode != 0 {
+					recordBatchUnlinkDirStats(info.n, result)
+				}
 				if !visited[info.n.Inode] {
-					if info.n.Nlink > 0 {
+					if info.trash > 0 {
+						if info.n.Nlink == 0 {
+							info.n.Nlink = 1
+						}
+						// Moving to trash is a rename-like operation: keep the inode and refresh metadata.
+						if _, err := s.Cols("nlink", "ctime", "ctimensec", "parent").Update(info.n, &node{Inode: info.n.Inode}); err != nil {
+							return err
+						}
+					} else if info.n.Nlink > 0 {
 						// inode still referenced somewhere: only update metadata
 						if _, err := s.Cols("nlink", "ctime", "ctimensec", "parent").Update(info.n, &node{Inode: info.n.Inode}); err != nil {
 							return err
@@ -2797,7 +2800,6 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 						switch info.n.Type {
 						case TypeFile:
 							entrySpace = align4K(info.n.Length)
-							needRecordStats = true
 							if delNodes[info.n.Inode].opened {
 								sustainedIns = append(sustainedIns, &sustained{Sid: m.sid, Inode: info.e.Inode})
 								if _, err := s.Cols("nlink", "ctime", "ctimensec").Update(info.n, &node{Inode: info.n.Inode}); err != nil {
@@ -2807,6 +2809,8 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 								// regular, un-opened file: add to delfile and delete inode later
 								delfilesIns = append(delfilesIns, &delfile{info.e.Inode, info.n.Length, nowUnix})
 								nodesDel = append(nodesDel, info.e.Inode)
+								needRecordStats = true
+								appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
 							}
 						case TypeSymlink:
 							// symlink: record for batched delete from symlink table
@@ -2818,10 +2822,12 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 							if info.n.Type != TypeFile {
 								entrySpace = align4K(0)
 								needRecordStats = true
+								appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
 							}
 						}
 						if needRecordStats {
-							recordGlobalDeletionStats(info.n, entrySpace, &totalLength, &totalSpace, &totalInodes)
+							batchFsSpace -= entrySpace
+							batchFsInodes--
 						}
 						xattrsDel = append(xattrsDel, info.e.Inode)
 					}
@@ -2838,7 +2844,6 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 						Inode:  info.n.Inode,
 						Type:   info.n.Type})
 				}
-				appendUGQuotaDelta(userGroupQuotas, parent, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
 				visited[info.n.Inode] = true
 			}
 
@@ -2912,19 +2917,17 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 		if err != nil {
 			return errno(err)
 		}
+
+		m.updateStats(batchFsSpace, batchFsInodes)
+		for _, q := range batchUserGroupQuotas {
+			m.updateUserGroupQuota(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
+		}
 	}
 
-	// outside of transaction: update global stats and trigger data deletion callbacks
+	// outside of transaction: trigger data deletion callbacks
 	for inode, info := range delNodes {
 		m.fileDeleted(info.opened, parent.IsTrash(), inode, info.length)
 	}
-	m.updateStats(totalSpace, totalInodes)
-	for _, quota := range *userGroupQuotas {
-		m.updateUserGroupQuota(ctx, quota.Uid, quota.Gid, quota.Space, quota.Inodes)
-	}
-	*length = totalLength
-	*space = totalSpace
-	*inodes = totalInodes
 	return 0
 }
 

@@ -1430,16 +1430,12 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 			m.fileDeleted(opened, parent.IsTrash(), inode, attr.Length)
 		}
 		m.updateStats(newSpace, newInode)
-		if _type == TypeFile && attr.Nlink > 0 {
-			m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, 0, -1)
-		} else {
-			m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, newSpace, newInode)
-		}
+		m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }
 
-func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length *int64, space *int64, inodes *int64, userGroupQuotas *[]userGroupQuotaDelta, skipCheckTrash ...bool) syscall.Errno {
+func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *batchUnlinkResult, skipCheckTrash ...bool) syscall.Errno {
 	if len(entries) == 0 {
 		return 0
 	}
@@ -1464,11 +1460,6 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 		opened bool
 		length uint64
 	}
-	var totalLength, totalSpace, totalInodes int64
-	var totalUserGroupQuotas []userGroupQuotaDelta
-	if userGroupQuotas != nil {
-		totalUserGroupQuotas = make([]userGroupQuotaDelta, 0, len(entries))
-	}
 
 	for len(entries) > 0 {
 		batchSize := batchNum
@@ -1486,15 +1477,15 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 		}
 
 		var entryInfos []*entryInfo
-		var batchLength, batchSpace, batchInodes int64
+		var batchDirLength, batchDirSpace, batchDirInodes int64
+		var batchFsSpace, batchFsInodes int64
 		var batchUserGroupQuotas []userGroupQuotaDelta
 		var delNodes map[Ino]*dNode
 
 		err := m.txn(ctx, func(tx *kvTxn) error {
-			batchLength, batchSpace, batchInodes = 0, 0, 0
-			if userGroupQuotas != nil {
-				batchUserGroupQuotas = make([]userGroupQuotaDelta, 0, len(batch))
-			}
+			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
+			batchFsSpace, batchFsInodes = 0, 0
+			batchUserGroupQuotas = make([]userGroupQuotaDelta, 0, len(batch))
 			delNodes = make(map[Ino]*dNode)
 			pbuf := tx.get(m.inodeKey(parent))
 			if pbuf == nil {
@@ -1637,6 +1628,13 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 				if info.attr == nil {
 					continue
 				}
+				if info.typ == TypeFile {
+					batchDirLength -= int64(info.attr.Length)
+					batchDirSpace -= align4K(info.attr.Length)
+				} else {
+					batchDirSpace -= align4K(0)
+				}
+				batchDirInodes--
 				if !visited[info.inode] {
 					if info.attr.Nlink > 0 {
 						tx.set(m.inodeKey(info.inode), m.marshal(info.attr))
@@ -1649,20 +1647,18 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 							} else {
 								tx.set(m.delfileKey(info.inode, info.attr.Length), m.packInt64(nowUnix))
 								tx.delete(m.inodeKey(info.inode))
-								batchSpace -= align4K(info.attr.Length)
-								batchInodes--
+								batchFsSpace -= align4K(info.attr.Length)
+								batchFsInodes--
+								appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
 							}
-							batchLength -= int64(info.attr.Length)
 						case TypeSymlink:
 							tx.delete(m.symKey(info.inode))
 							fallthrough
 						default:
 							tx.delete(m.inodeKey(info.inode))
-							batchSpace -= align4K(0)
-							batchInodes--
-							if info.typ != TypeSymlink {
-								batchLength -= int64(info.attr.Length)
-							}
+							batchFsSpace -= align4K(0)
+							batchFsInodes--
+							appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
 						}
 						// Delete xattrs and parent keys
 						tx.deleteKeys(m.xattrKey(info.inode, ""))
@@ -1686,7 +1682,6 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 				if info.attr.Parent == 0 && info.attr.Nlink > 0 {
 					tx.incrBy(m.parentKey(info.inode, parent), -1)
 				}
-				appendUGQuotaDelta(&batchUserGroupQuotas, parent, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
 			}
 
 			// Update parent directory if needed
@@ -1701,28 +1696,18 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length
 			return errno(err)
 		}
 
-		// Outside of transaction: update global stats and trigger data deletion callbacks
+		// Outside of transaction: trigger data deletion callbacks
 		for inode, info := range delNodes {
 			m.fileDeleted(info.opened, parent.IsTrash(), inode, info.length)
 		}
-		m.updateStats(batchSpace, batchInodes)
-		for _, quota := range batchUserGroupQuotas {
-			m.updateUserGroupQuota(ctx, quota.Uid, quota.Gid, quota.Space, quota.Inodes)
-		}
 
-		totalLength += batchLength
-		totalSpace += batchSpace
-		totalInodes += batchInodes
-		if userGroupQuotas != nil {
-			totalUserGroupQuotas = append(totalUserGroupQuotas, batchUserGroupQuotas...)
+		result.length += batchDirLength
+		result.space += batchDirSpace
+		result.inodes += batchDirInodes
+		m.updateStats(batchFsSpace, batchFsInodes)
+		for _, q := range batchUserGroupQuotas {
+			m.updateUserGroupQuota(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
-	}
-
-	*length = totalLength
-	*space = totalSpace
-	*inodes = totalInodes
-	if userGroupQuotas != nil {
-		*userGroupQuotas = totalUserGroupQuotas
 	}
 	return 0
 }

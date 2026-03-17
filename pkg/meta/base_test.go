@@ -2491,6 +2491,9 @@ func testConcurrentDir(t *testing.T, m Meta) {
 	var g sync.WaitGroup
 	var err error
 	format, err := m.Load(false)
+	if err != nil {
+		t.Fatalf("load format failed: %s", err)
+	}
 	format.Capacity = 0
 	format.Inodes = 0
 	if err = m.Init(format, false); err != nil {
@@ -2529,9 +2532,6 @@ func testConcurrentDir(t *testing.T, m Meta) {
 		}(i)
 	}
 	g.Wait()
-	if err != nil {
-		t.Fatalf("concurrent dir: %s", err)
-	}
 	for i := 0; i < 100; i++ {
 		g.Add(1)
 		go func(i int) {
@@ -3552,7 +3552,7 @@ func checkEntry(t *testing.T, m Meta, srcEntry, dstEntry *Entry, dstParentIno In
 	}
 	keys := bytes.Split(value1, []byte{0})
 	for _, key := range keys {
-		if key == nil || len(key) == 0 {
+		if len(key) == 0 {
 			continue
 		}
 		var v1, v2 []byte
@@ -4948,8 +4948,10 @@ func testHardlinkQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid u
 	if dirQuotaAfterHardlink == nil {
 		t.Fatalf("Directory quota not found after hardlink creation")
 	}
+	// After the new strategy, creating a hardlink does not increase user/group quota
+	// because hardlink only creates a new directory entry, not a new file
 	expectedSpaceIncrease := int64(0)
-	expectedInodeIncrease := int64(1)
+	expectedInodeIncrease := int64(0)
 
 	actualSpaceIncrease := ugQuotaAfterHardlink.UsedSpace - ugQuotaAfterFile.UsedSpace
 	actualInodeIncrease := ugQuotaAfterHardlink.UsedInodes - ugQuotaAfterFile.UsedInodes
@@ -4974,7 +4976,7 @@ func testHardlinkQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid u
 		t.Fatalf("Directory quota inode increase mismatch: expected %d, got %d", dirExpectedInodeIncrease, dirActualInodeIncrease)
 	}
 
-	if st := m.Unlink(ctx, parent, "test_hardlink_file"); st != 0 {
+	if st := m.Unlink(ctx, parent, "test_hardlink_file", true); st != 0 {
 		t.Fatalf("Unlink hardlink: %s", st)
 	}
 
@@ -4999,8 +5001,10 @@ func testHardlinkQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid u
 		t.Fatalf("Directory quota not found after hardlink deletion")
 	}
 
+	// After the new strategy, deleting a hardlink does not decrease user/group quota
+	// because hardlink only deletes a directory entry, not the actual file
 	expectedSpaceDecrease := int64(0)
-	expectedInodeDecrease := int64(1)
+	expectedInodeDecrease := int64(0)
 
 	actualSpaceDecrease := ugQuotaAfterHardlink.UsedSpace - ugQuotaAfterUnlink.UsedSpace
 	actualInodeDecrease := ugQuotaAfterHardlink.UsedInodes - ugQuotaAfterUnlink.UsedInodes
@@ -5111,14 +5115,16 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		t.Fatalf("User group quota not found after batch unlink")
 	}
 
-	expectedInodeDecrease := int64(len(fileNames))
+	// After the new strategy, files moved to trash do not decrease user/group quota
+	// Only files permanently deleted from trash decrease quota
+	expectedInodeDecrease := int64(0)
 	actualInodeDecrease := ugQuotaBefore.UsedInodes - ugQuotaAfter.UsedInodes
 
 	if actualInodeDecrease != expectedInodeDecrease {
 		t.Fatalf("User group quota inode decrease mismatch: expected %d, got %d", expectedInodeDecrease, actualInodeDecrease)
 	}
 
-	expectedSpaceDecrease := align4K(fileSize) * int64(len(fileNames))
+	expectedSpaceDecrease := int64(0)
 	actualSpaceDecrease := ugQuotaBefore.UsedSpace - ugQuotaAfter.UsedSpace
 
 	if actualSpaceDecrease != expectedSpaceDecrease {
@@ -5206,7 +5212,8 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		t.Fatalf("User group quota not found after hardlink unlink")
 	}
 
-	expectedHardlinkInodeDecrease := int64(1)
+	// After the new strategy, hardlinks moved to trash do not decrease user/group quota
+	expectedHardlinkInodeDecrease := int64(0)
 	expectedHardlinkSpaceDecrease := int64(0)
 
 	actualHardlinkInodeDecrease := ugQuotaBeforeHardlink.UsedInodes - ugQuotaAfterHardlink.UsedInodes
@@ -5312,7 +5319,8 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		t.Fatalf("User group quota not found after multi-hardlink batch unlink")
 	}
 
-	expectedMultiHardlinkInodeDecrease := int64(len(hardlinkNames))
+	// After the new strategy, hardlinks moved to trash do not decrease user/group quota
+	expectedMultiHardlinkInodeDecrease := int64(0)
 	expectedMultiHardlinkSpaceDecrease := int64(0)
 
 	actualMultiHardlinkInodeDecrease := ugQuotaBeforeMultiHardlink.UsedInodes - ugQuotaAfterMultiHardlink.UsedInodes
@@ -5416,6 +5424,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		t.Fatalf("User group quota not found after symlink batch unlink")
 	}
 
+	// testConfig() uses TrashDays=0, so batch unlink permanently deletes symlinks.
 	expectedSymlinkInodeDecrease := int64(len(symlinkNames))
 	expectedSymlinkSpaceDecrease := align4K(0) * int64(len(symlinkNames))
 

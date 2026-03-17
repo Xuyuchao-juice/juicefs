@@ -116,7 +116,7 @@ type engine interface {
 	doLink(ctx Context, inode, parent Ino, name string, attr *Attr) syscall.Errno
 	doUnlink(ctx Context, parent Ino, name string, attr *Attr, skipCheckTrash ...bool) syscall.Errno
 	doRmdir(ctx Context, parent Ino, name string, inode *Ino, attr *Attr, skipCheckTrash ...bool) syscall.Errno
-	doBatchUnlink(ctx Context, parent Ino, entries []*Entry, length *int64, space *int64, inodes *int64, userGroupQuotas *[]userGroupQuotaDelta, skipCheckTrash ...bool) (errno syscall.Errno)
+	doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *batchUnlinkResult, skipCheckTrash ...bool) syscall.Errno
 	doReadlink(ctx Context, inode Ino, noatime bool) (int64, []byte, error)
 	doReaddir(ctx Context, inode Ino, plus uint8, entries *[]*Entry, limit int) syscall.Errno
 	doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tinode *Ino, attr, tattr *Attr) syscall.Errno
@@ -204,23 +204,32 @@ type batchCloneResult struct {
 	userGroupQuotas []userGroupQuotaDelta
 }
 
+type batchUnlinkResult struct {
+	length          int64
+	space           int64
+	inodes          int64
+	userGroupQuotas []userGroupQuotaDelta
+}
+
 func appendUGQuotaDelta(userGroupQuotas *[]userGroupQuotaDelta, parent Ino, uid, gid uint32, nlink uint32, typ uint8, length uint64) {
 	if userGroupQuotas == nil {
 		return
 	}
 	var entrySpace int64
+	var entryInodes int64
 	if nlink == 0 {
 		if typ == TypeFile {
 			entrySpace = -align4K(length)
 		} else {
 			entrySpace = -align4K(0)
 		}
+		entryInodes = -1
 	}
 	*userGroupQuotas = append(*userGroupQuotas, userGroupQuotaDelta{
 		Uid:    uid,
 		Gid:    gid,
 		Space:  entrySpace,
-		Inodes: -1,
+		Inodes: entryInodes,
 	})
 }
 
@@ -1602,7 +1611,7 @@ func (m *baseMeta) Link(ctx Context, inode, parent Ino, name string, attr *Attr)
 	if err == 0 {
 		m.updateDirStat(ctx, parent, int64(attr.Length), align4K(attr.Length), 1)
 		m.updateDirQuota(ctx, parent, align4K(attr.Length), 1)
-		m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, 0, 1)
+		m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, 0, 0)
 	}
 	return err
 }
@@ -1700,9 +1709,9 @@ func (m *baseMeta) Rmdir(ctx Context, parent Ino, name string, skipCheckTrash ..
 			m.parentMu.Lock()
 			delete(m.dirParents, inode)
 			m.parentMu.Unlock()
-			m.updateDirQuota(ctx, parent, -align4K(0), -1)
 		}
 		m.updateDirStat(ctx, parent, 0, -align4K(0), -1)
+		m.updateDirQuota(ctx, parent, -align4K(0), -1)
 	}
 	return st
 }
@@ -1712,15 +1721,12 @@ func (m *baseMeta) BatchUnlink(ctx Context, parent Ino, entries []*Entry, count 
 	if len(entries) == 0 {
 		return 0
 	}
-	var length int64
-	var space int64
-	var inodes int64
-	userGroupQuotas := make([]userGroupQuotaDelta, 0, len(entries))
-	st := m.en.doBatchUnlink(ctx, parent, entries, &length, &space, &inodes, &userGroupQuotas, skipCheckTrash)
+	var r batchUnlinkResult
+	st := m.en.doBatchUnlink(ctx, parent, entries, &r, skipCheckTrash)
 	if st == 0 {
-		m.updateDirStat(ctx, parent, length, space, inodes)
+		m.updateDirStat(ctx, parent, r.length, r.space, r.inodes)
 		if !parent.IsTrash() {
-			m.updateDirQuota(ctx, parent, space, inodes)
+			m.updateDirQuota(ctx, parent, r.space, r.inodes)
 		}
 		if count != nil && len(entries) > 0 {
 			atomic.AddUint64(count, uint64(len(entries)))
