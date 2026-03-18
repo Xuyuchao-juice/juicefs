@@ -1762,14 +1762,14 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
 		var batchFsSpace, batchFsInodes int64
-		var batchUserGroupQuotas map[uint64]*userGroupQuotaDelta
+		var deltas ugQuotaDeltas
 		var delNodes map[Ino]*dNode
 		watchKeys := []string{m.inodeKey(parent), m.entryKey(parent)}
 
 		err := m.txn(ctx, func(tx *redis.Tx) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
-			batchUserGroupQuotas = make(map[uint64]*userGroupQuotaDelta)
+			deltas = make(ugQuotaDeltas)
 			delNodes = make(map[Ino]*dNode)
 
 			rs, err := tx.Get(ctx, m.inodeKey(parent)).Result()
@@ -1969,7 +1969,12 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 								batchFsInodes--
 								stats[m.usedSpaceKey()] -= align4K(info.attr.Length)
 								stats[m.totalInodesKey()]--
-								recordUGQuota(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, -align4K(info.attr.Length), -1)
+								deltas.add(&ugQuotaDelta{
+									Uid:    info.attr.Uid,
+									Gid:    info.attr.Gid,
+									Space:  -align4K(info.attr.Length),
+									Inodes: -1,
+								})
 							}
 						case TypeSymlink:
 							keys = append(keys, m.symKey(info.inode))
@@ -1980,7 +1985,12 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 							batchFsInodes--
 							stats[m.usedSpaceKey()] -= align4K(0)
 							stats[m.totalInodesKey()]--
-							recordUGQuota(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, -align4K(0), -1)
+							deltas.add(&ugQuotaDelta{
+								Uid:    info.attr.Uid,
+								Gid:    info.attr.Gid,
+								Space:  -align4K(0),
+								Inodes: -1,
+							})
 						}
 						keys = append(keys, m.xattrKey(info.inode))
 						if info.attr.Parent == 0 {
@@ -2072,7 +2082,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 		result.space += batchDirSpace
 		result.inodes += batchDirInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
-		for _, q := range batchUserGroupQuotas {
+		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
 	}

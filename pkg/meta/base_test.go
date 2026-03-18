@@ -5424,9 +5424,8 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		t.Fatalf("User group quota not found after symlink batch unlink")
 	}
 
-	// After the new strategy, symlinks moved to trash do not decrease user/group quota
-	expectedSymlinkInodeDecrease := int64(0)
-	expectedSymlinkSpaceDecrease := int64(0)
+	expectedSymlinkInodeDecrease := int64(3)
+	expectedSymlinkSpaceDecrease := 3 * align4K(0)
 
 	actualSymlinkInodeDecrease := ugQuotaBeforeSymlink.UsedInodes - ugQuotaAfterSymlink.UsedInodes
 	actualSymlinkSpaceDecrease := ugQuotaBeforeSymlink.UsedSpace - ugQuotaAfterSymlink.UsedSpace

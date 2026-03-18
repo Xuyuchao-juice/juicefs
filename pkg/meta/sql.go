@@ -2624,8 +2624,11 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 		entries = entries[batchSize:]
 		var batchFsSpace, batchFsInodes int64
 		var batchDirLength, batchDirSpace, batchDirInodes int64
-		batchUserGroupQuotas := make(map[uint64]*userGroupQuotaDelta)
+		var deltas ugQuotaDeltas
 		err := m.txn(func(s *xorm.Session) error {
+			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
+			batchFsSpace, batchFsInodes = 0, 0
+			deltas = make(ugQuotaDeltas)
 			pn := node{Inode: parent}
 			ok, err := s.Get(&pn)
 			if err != nil {
@@ -2797,7 +2800,12 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								nodesDel = append(nodesDel, info.e.Inode)
 								batchFsSpace -= entrySpace
 								batchFsInodes--
-								recordUGQuota(batchUserGroupQuotas, info.n.Uid, info.n.Gid, -entrySpace, -1)
+								deltas.add(&ugQuotaDelta{
+									Uid:    info.n.Uid,
+									Gid:    info.n.Gid,
+									Space:  -entrySpace,
+									Inodes: -1,
+								})
 							}
 						case TypeSymlink:
 							// symlink: record for batched delete from symlink table
@@ -2810,7 +2818,12 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								entrySpace = align4K(0)
 								batchFsSpace -= entrySpace
 								batchFsInodes--
-								recordUGQuota(batchUserGroupQuotas, info.n.Uid, info.n.Gid, -entrySpace, -1)
+								deltas.add(&ugQuotaDelta{
+									Uid:    info.n.Uid,
+									Gid:    info.n.Gid,
+									Space:  -entrySpace,
+									Inodes: -1,
+								})
 							}
 						}
 						xattrsDel = append(xattrsDel, info.e.Inode)
@@ -2906,7 +2919,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 		result.space += batchDirSpace
 		result.inodes += batchDirInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
-		for _, q := range batchUserGroupQuotas {
+		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
 	}
@@ -5121,7 +5134,7 @@ func (m *dbMeta) doBatchClone(ctx Context, srcParent Ino, dstParent Ino, entries
 
 	err := m.txn(func(s *xorm.Session) error {
 		nowNano := time.Now().UnixNano()
-		*result = batchCloneResult{userGroupQuotas: make(map[uint64]*userGroupQuotaDelta)}
+		*result = batchCloneResult{deltas: make(ugQuotaDeltas)}
 
 		pn, err := m.validateCloneTarget(ctx, s, dstParent)
 		if err != nil {
@@ -5193,7 +5206,12 @@ func (m *dbMeta) doBatchClone(ctx Context, srcParent Ino, dstParent Ino, entries
 			result.length += int64(sn.Length)
 			result.space += entrySpace
 			result.inodes++
-			recordUGQuota(result.userGroupQuotas, info.dstNode.Uid, info.dstNode.Gid, entrySpace, 1)
+			result.deltas.add(&ugQuotaDelta{
+				Uid:    info.dstNode.Uid,
+				Gid:    info.dstNode.Gid,
+				Space:  entrySpace,
+				Inodes: 1,
+			})
 		}
 
 		if err := mustInsert(s, nodesIns...); err != nil {

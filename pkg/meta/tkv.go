@@ -1479,13 +1479,13 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
 		var batchFsSpace, batchFsInodes int64
-		var batchUserGroupQuotas map[uint64]*userGroupQuotaDelta
+		var deltas ugQuotaDeltas
 		var delNodes map[Ino]*dNode
 
 		err := m.txn(ctx, func(tx *kvTxn) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
-			batchUserGroupQuotas = make(map[uint64]*userGroupQuotaDelta)
+			deltas = make(ugQuotaDeltas)
 			delNodes = make(map[Ino]*dNode)
 			pbuf := tx.get(m.inodeKey(parent))
 			if pbuf == nil {
@@ -1649,7 +1649,12 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								tx.delete(m.inodeKey(info.inode))
 								batchFsSpace -= align4K(info.attr.Length)
 								batchFsInodes--
-								recordUGQuota(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, -align4K(info.attr.Length), -1)
+								deltas.add(&ugQuotaDelta{
+									Uid:    info.attr.Uid,
+									Gid:    info.attr.Gid,
+									Space:  -align4K(info.attr.Length),
+									Inodes: -1,
+								})
 							}
 						case TypeSymlink:
 							tx.delete(m.symKey(info.inode))
@@ -1658,7 +1663,12 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 							tx.delete(m.inodeKey(info.inode))
 							batchFsSpace -= align4K(0)
 							batchFsInodes--
-							recordUGQuota(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, -align4K(0), -1)
+							deltas.add(&ugQuotaDelta{
+								Uid:    info.attr.Uid,
+								Gid:    info.attr.Gid,
+								Space:  -align4K(0),
+								Inodes: -1,
+							})
 						}
 						// Delete xattrs and parent keys
 						tx.deleteKeys(m.xattrKey(info.inode, ""))
@@ -1705,7 +1715,7 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 		result.space += batchDirSpace
 		result.inodes += batchDirInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
-		for _, q := range batchUserGroupQuotas {
+		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
 	}

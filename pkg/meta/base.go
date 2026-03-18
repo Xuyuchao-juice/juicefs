@@ -189,39 +189,37 @@ type symlinkCache struct {
 	cap  int32
 }
 
-// userGroupQuotaDelta represents quota changes for a specific user and group.
-type userGroupQuotaDelta struct {
+// ugQuotaDelta represents quota changes for a specific user and group.
+type ugQuotaDelta struct {
 	Uid    uint32
 	Gid    uint32
 	Space  int64
 	Inodes int64
 }
 
+type ugQuotaDeltas map[uint64]*ugQuotaDelta
+
+func (ds ugQuotaDeltas) add(delta *ugQuotaDelta) {
+	key := ugKey(delta.Uid, delta.Gid)
+	if existing, ok := ds[key]; ok {
+		existing.Space += delta.Space
+		existing.Inodes += delta.Inodes
+	} else {
+		ds[key] = delta
+	}
+}
 type batchCloneResult struct {
 	length          int64
 	space           int64
 	inodes          int64
-	userGroupQuotas map[uint64]*userGroupQuotaDelta
+	deltas          ugQuotaDeltas
 }
 
 func ugKey(uid, gid uint32) uint64 {
 	return (uint64(uid) << 32) | uint64(gid)
 }
 
-func recordUGQuota(userGroupQuotas map[uint64]*userGroupQuotaDelta, uid, gid uint32, entrySpace int64, inodes int64) {
-	key := ugKey(uid, gid)
-	if delta, ok := userGroupQuotas[key]; ok {
-		delta.Space += entrySpace
-		delta.Inodes += inodes
-	} else {
-		userGroupQuotas[key] = &userGroupQuotaDelta{
-			Uid:    uid,
-			Gid:    gid,
-			Space:  entrySpace,
-			Inodes: inodes,
-		}
-	}
-}
+
 
 func newSymlinkCache(cap int32) *symlinkCache {
 	return &symlinkCache{
@@ -1734,7 +1732,7 @@ func (m *baseMeta) BatchClone(ctx Context, srcParent Ino, dstParent Ino, entries
 		m.en.updateStats(r.space, r.inodes)
 		m.updateDirQuota(ctx, dstParent, r.space, r.inodes)
 		// TODO
-		for _, q := range r.userGroupQuotas {
+		for _, q := range r.deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
 		if count != nil {
