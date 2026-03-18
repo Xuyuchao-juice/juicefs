@@ -1720,7 +1720,7 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 			m.fileDeleted(opened, parent.IsTrash(), inode, attr.Length)
 		}
 		m.updateStats(newSpace, newInode)
-		m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, newSpace, newInode)
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }
@@ -2073,7 +2073,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 		result.inodes += batchDirInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range batchUserGroupQuotas {
-			m.updateUserGroupQuota(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
+			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
 	}
 	return 0
@@ -2086,6 +2086,7 @@ func (m *redisMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, o
 			return st
 		}
 	}
+	var attr Attr
 	err := m.txn(ctx, func(tx *redis.Tx) error {
 		buf, err := tx.HGet(ctx, m.entryKey(parent), name).Bytes()
 		if err == redis.Nil && m.conf.CaseInsensi {
@@ -2116,7 +2117,7 @@ func (m *redisMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, o
 		if rs[0] == nil {
 			return redis.Nil
 		}
-		var pattr, attr Attr
+		var pattr Attr
 		m.parseAttr([]byte(rs[0].(string)), &pattr)
 		if pattr.Typ != TypeDirectory {
 			return syscall.ENOTDIR
@@ -2190,9 +2191,7 @@ func (m *redisMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, o
 	}, m.inodeKey(parent), m.entryKey(parent))
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
-		if oldAttr != nil {
-			m.updateUserGroupQuota(ctx, oldAttr.Uid, oldAttr.Gid, -align4K(0), -1)
-		}
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, -align4K(0), -1)
 	}
 	return errno(err)
 }
@@ -2507,9 +2506,7 @@ func (m *redisMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentD
 			m.fileDeleted(opened, false, dino, tattr.Length)
 		}
 		m.updateStats(newSpace, newInode)
-		if newSpace != 0 || newInode != 0 {
-			m.updateUserGroupQuota(ctx, tattr.Uid, tattr.Gid, newSpace, newInode)
-		}
+		m.updateUserGroupStat(ctx, tattr.Uid, tattr.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }

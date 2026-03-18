@@ -1952,7 +1952,7 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 			m.fileDeleted(opened, parent.IsTrash(), n.Inode, n.Length)
 		}
 		m.updateStats(newSpace, newInode)
-		m.updateUserGroupQuota(ctx, n.Uid, n.Gid, newSpace, newInode)
+		m.updateUserGroupStat(ctx, n.Uid, n.Gid, newSpace, newInode)
 	}
 	if err == nil && attr != nil {
 		m.parseAttr(&n, attr)
@@ -2078,7 +2078,7 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, attr
 	})
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
-		m.updateUserGroupQuota(ctx, n.Uid, n.Gid, -align4K(0), -1)
+		m.updateUserGroupStat(ctx, n.Uid, n.Gid, -align4K(0), -1)
 	}
 	return errno(err)
 }
@@ -2466,7 +2466,7 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		m.updateStats(newSpace, newInode)
 		if newSpace != 0 || newInode != 0 {
-			m.updateUserGroupQuota(ctx, dn.Uid, dn.Gid, newSpace, newInode)
+			m.updateUserGroupStat(ctx, dn.Uid, dn.Gid, newSpace, newInode)
 		}
 	}
 	return errno(err)
@@ -2909,7 +2909,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 		result.inodes += batchDirInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range batchUserGroupQuotas {
-			m.updateUserGroupQuota(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
+			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
 	}
 
@@ -3260,7 +3260,7 @@ func (m *dbMeta) CopyFileRange(ctx Context, fin Ino, offIn uint64, fout Ino, off
 	if err == nil {
 		m.updateParentStat(ctx, fout, nout.Parent, newLength, newSpace)
 		if newSpace > 0 {
-			m.updateUserGroupQuota(ctx, nout.Uid, nout.Gid, newSpace, 0)
+			m.updateUserGroupStat(ctx, nout.Uid, nout.Gid, newSpace, 0)
 		}
 	}
 	return errno(err)

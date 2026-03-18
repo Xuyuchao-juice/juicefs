@@ -1402,12 +1402,12 @@ func (m *baseMeta) SetAttr(ctx Context, inode Ino, set uint16, sugidclearmode ui
 			}
 
 			if uidChanged {
-				m.updateUserGroupQuota(ctx, oldAttr.Uid, 0, -space, -inodes)
-				m.updateUserGroupQuota(ctx, attr.Uid, 0, space, inodes)
+				m.updateUserGroupStat(ctx, oldAttr.Uid, 0, -space, -inodes)
+				m.updateUserGroupStat(ctx, attr.Uid, 0, space, inodes)
 			}
 			if gidChanged {
-				m.updateUserGroupQuota(ctx, 0, oldAttr.Gid, -space, -inodes)
-				m.updateUserGroupQuota(ctx, 0, attr.Gid, space, inodes)
+				m.updateUserGroupStat(ctx, 0, oldAttr.Gid, -space, -inodes)
+				m.updateUserGroupStat(ctx, 0, attr.Gid, space, inodes)
 			}
 		}
 	}
@@ -1528,7 +1528,7 @@ func (m *baseMeta) Mknod(ctx Context, parent Ino, name string, _type uint8, mode
 		m.en.updateStats(space, inodes)
 		m.updateDirStat(ctx, parent, 0, space, inodes)
 		m.updateDirQuota(ctx, parent, space, inodes)
-		m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, space, inodes)
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, space, inodes)
 	}
 	return st
 }
@@ -1746,8 +1746,9 @@ func (m *baseMeta) BatchClone(ctx Context, srcParent Ino, dstParent Ino, entries
 	if st == 0 {
 		m.en.updateStats(r.space, r.inodes)
 		m.updateDirQuota(ctx, dstParent, r.space, r.inodes)
+		// TODO
 		for _, q := range r.userGroupQuotas {
-			m.updateUserGroupQuota(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
+			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
 		if count != nil {
 			atomic.AddUint64(count, uint64(r.inodes))
@@ -2038,9 +2039,7 @@ func (m *baseMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice 
 	st := m.en.doWrite(ctx, inode, indx, off, slice, mtime, &numSlices, &delta, &attr)
 	if st == 0 {
 		m.updateParentStat(ctx, inode, attr.Parent, delta.length, delta.space)
-		if delta.space != 0 {
-			m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, delta.space, 0)
-		}
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, delta.space, 0)
 		if numSlices%100 == 99 || numSlices > 350 {
 			if numSlices < maxSlices {
 				go m.compactChunk(inode, indx, false, false)
@@ -2067,9 +2066,7 @@ func (m *baseMeta) Truncate(ctx Context, inode Ino, flags uint8, length uint64, 
 	st := m.en.doTruncate(ctx, inode, flags, length, &delta, attr, skipPermCheck)
 	if st == 0 {
 		m.updateParentStat(ctx, inode, attr.Parent, delta.length, delta.space)
-		if delta.space != 0 {
-			m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, delta.space, 0)
-		}
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, delta.space, 0)
 	}
 	return st
 }
@@ -2105,9 +2102,7 @@ func (m *baseMeta) Fallocate(ctx Context, inode Ino, mode uint8, off uint64, siz
 			*flength = attr.Length
 		}
 		m.updateParentStat(ctx, inode, attr.Parent, delta.length, delta.space)
-		if delta.space != 0 {
-			m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, delta.space, 0)
-		}
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, delta.space, 0)
 	}
 	return st
 }
@@ -3260,7 +3255,7 @@ func (m *baseMeta) cloneEntry(ctx Context, srcIno Ino, parent Ino, name string, 
 	}
 	m.en.updateStats(align4K(attr.Length), 1)
 	atomic.AddUint64(count, 1)
-	m.updateUserGroupQuota(ctx, attr.Uid, attr.Gid, align4K(attr.Length), 1)
+	m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, align4K(attr.Length), 1)
 	if attr.Typ != TypeDirectory {
 		return 0
 	}

@@ -455,11 +455,11 @@ func (m *baseMeta) updateDirQuota(ctx Context, inode Ino, space, inodes int64) {
 	}
 }
 
-func (m *baseMeta) updateUserGroupQuota(ctx Context, uid, gid uint32, space, inodes int64) {
+func (m *baseMeta) updateUserGroupStat(ctx Context, uid, gid uint32, space, inodes int64) {
 	if !m.getFormat().UserGroupQuota {
 		return
 	}
-	if uid == 0 && gid == 0 {
+	if (uid == 0 && gid == 0) || (space == 0 && inodes == 0) {
 		return
 	}
 	m.quotaMu.Lock()
@@ -467,14 +467,13 @@ func (m *baseMeta) updateUserGroupQuota(ctx Context, uid, gid uint32, space, ino
 		if uq := m.userQuotas[uint64(uid)]; uq != nil {
 			uq.update(space, inodes)
 		} else {
-			// Create new user quota if it doesn't exist
 			m.userQuotas[uint64(uid)] = &Quota{
 				UsedSpace:  0,
 				UsedInodes: 0,
-				MaxSpace:   -1,     // No limit
-				MaxInodes:  -1,     // No limit
-				newSpace:   space,  // Set newSpace for database sync
-				newInodes:  inodes, // Set newInodes for database sync
+				MaxSpace:   -1, // No limit
+				MaxInodes:  -1,
+				newSpace:   space,
+				newInodes:  inodes,
 			}
 		}
 	}
@@ -482,14 +481,13 @@ func (m *baseMeta) updateUserGroupQuota(ctx Context, uid, gid uint32, space, ino
 		if gq := m.groupQuotas[uint64(gid)]; gq != nil {
 			gq.update(space, inodes)
 		} else {
-			// Create new group quota if it doesn't exist
 			m.groupQuotas[uint64(gid)] = &Quota{
 				UsedSpace:  0,
 				UsedInodes: 0,
-				MaxSpace:   -1,     // No limit
-				MaxInodes:  -1,     // No limit
-				newSpace:   space,  // Set newSpace for database sync
-				newInodes:  inodes, // Set newInodes for database sync
+				MaxSpace:   -1, // No limit
+				MaxInodes:  -1,
+				newSpace:   space,
+				newInodes:  inodes,
 			}
 		}
 	}
