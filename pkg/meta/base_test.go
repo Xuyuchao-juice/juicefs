@@ -5034,6 +5034,9 @@ func testHardlinkQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid u
 }
 
 func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid uint32) {
+	format := m.getBase().getFormat()
+	format.UserGroupQuota = true
+
 	if err := m.HandleQuota(ctx, QuotaSet, "", uid, 0, map[string]*Quota{fmt.Sprintf("uid:%d", uid): {MaxSpace: 100 << 20, MaxInodes: 100}}, false, false, false); err != nil {
 		t.Fatalf("Set user quota: %s", err)
 	}
@@ -5066,6 +5069,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		}
 		fileInodes = append(fileInodes, inode)
 		fileAttrs = append(fileAttrs, attr)
+		m.Close(ctx, inode)
 	}
 
 	m.getBase().doFlushQuotas()
