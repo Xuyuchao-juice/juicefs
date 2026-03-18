@@ -116,7 +116,7 @@ type engine interface {
 	doLink(ctx Context, inode, parent Ino, name string, attr *Attr) syscall.Errno
 	doUnlink(ctx Context, parent Ino, name string, attr *Attr, skipCheckTrash ...bool) syscall.Errno
 	doRmdir(ctx Context, parent Ino, name string, inode *Ino, attr *Attr, skipCheckTrash ...bool) syscall.Errno
-	doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *batchUnlinkResult, skipCheckTrash ...bool) syscall.Errno
+	doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *dirStat, skipCheckTrash ...bool) syscall.Errno
 	doReadlink(ctx Context, inode Ino, noatime bool) (int64, []byte, error)
 	doReaddir(ctx Context, inode Ino, plus uint8, entries *[]*Entry, limit int) syscall.Errno
 	doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tinode *Ino, attr, tattr *Attr) syscall.Errno
@@ -204,34 +204,21 @@ type batchCloneResult struct {
 	userGroupQuotas map[uint64]*userGroupQuotaDelta
 }
 
-type batchUnlinkResult struct {
-	length int64
-	space  int64
-	inodes int64
-}
-
 func ugKey(uid, gid uint32) uint64 {
 	return (uint64(uid) << 32) | uint64(gid)
 }
 
-func appendUGQuotaDelta(userGroupQuotas map[uint64]*userGroupQuotaDelta, uid, gid uint32, nlink uint32, typ uint8, length uint64) {
-	if userGroupQuotas == nil || nlink != 0 {
-		return
-	}
-	entrySpace := -align4K(0)
-	if typ == TypeFile {
-		entrySpace = -align4K(length)
-	}
+func recordUGQuota(userGroupQuotas map[uint64]*userGroupQuotaDelta, uid, gid uint32, entrySpace int64, inodes int64) {
 	key := ugKey(uid, gid)
 	if delta, ok := userGroupQuotas[key]; ok {
 		delta.Space += entrySpace
-		delta.Inodes--
+		delta.Inodes += inodes
 	} else {
 		userGroupQuotas[key] = &userGroupQuotaDelta{
 			Uid:    uid,
 			Gid:    gid,
 			Space:  entrySpace,
-			Inodes: -1,
+			Inodes: inodes,
 		}
 	}
 }
@@ -1723,7 +1710,7 @@ func (m *baseMeta) BatchUnlink(ctx Context, parent Ino, entries []*Entry, count 
 	if len(entries) == 0 {
 		return 0
 	}
-	var r batchUnlinkResult
+	var r dirStat
 	st := m.en.doBatchUnlink(ctx, parent, entries, &r, skipCheckTrash)
 	if st == 0 {
 		m.updateDirStat(ctx, parent, r.length, r.space, r.inodes)

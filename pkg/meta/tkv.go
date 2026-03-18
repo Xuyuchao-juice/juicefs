@@ -1435,7 +1435,7 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 	return errno(err)
 }
 
-func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *batchUnlinkResult, skipCheckTrash ...bool) syscall.Errno {
+func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *dirStat, skipCheckTrash ...bool) syscall.Errno {
 	if len(entries) == 0 {
 		return 0
 	}
@@ -1649,7 +1649,7 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								tx.delete(m.inodeKey(info.inode))
 								batchFsSpace -= align4K(info.attr.Length)
 								batchFsInodes--
-								appendUGQuotaDelta(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
+								recordUGQuota(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, -align4K(info.attr.Length), -1)
 							}
 						case TypeSymlink:
 							tx.delete(m.symKey(info.inode))
@@ -1658,7 +1658,7 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 							tx.delete(m.inodeKey(info.inode))
 							batchFsSpace -= align4K(0)
 							batchFsInodes--
-							appendUGQuotaDelta(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
+							recordUGQuota(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, -align4K(0), -1)
 						}
 						// Delete xattrs and parent keys
 						tx.deleteKeys(m.xattrKey(info.inode, ""))
@@ -1714,6 +1714,7 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 
 func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldAttr *Attr, skipCheckTrash ...bool) syscall.Errno {
 	var trash Ino
+	var attr Attr
 	if !(len(skipCheckTrash) == 1 && skipCheckTrash[0]) {
 		if st := m.checkTrash(parent, &trash); st != 0 {
 			return st
@@ -1741,7 +1742,7 @@ func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldA
 		if rs[0] == nil {
 			return syscall.ENOENT
 		}
-		var pattr, attr Attr
+		var pattr Attr
 		m.parseAttr(rs[0], &pattr)
 		if pattr.Typ != TypeDirectory {
 			return syscall.ENOTDIR
@@ -1809,9 +1810,7 @@ func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldA
 	}, parent)
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
-		if oldAttr != nil {
-			m.updateUserGroupStat(ctx, oldAttr.Uid, oldAttr.Gid, -align4K(0), -1)
-		}
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, -align4K(0), -1)
 	}
 	return errno(err)
 }
@@ -2256,6 +2255,7 @@ func (m *kvMeta) doDeleteSustainedInode(sid uint64, inode Ino) error {
 	if err == nil && newSpace < 0 {
 		m.updateStats(newSpace, -1)
 		m.tryDeleteFileData(inode, attr.Length, false)
+		m.updateUserGroupStat(Background(), attr.Uid, attr.Gid, newSpace, 0)
 	}
 	return err
 }
@@ -2461,6 +2461,7 @@ func (m *kvMeta) CopyFileRange(ctx Context, fin Ino, offIn uint64, fout Ino, off
 	}, fout)
 	if err == nil {
 		m.updateParentStat(ctx, fout, attr.Parent, newLength, newSpace)
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, 0)
 	}
 	return errno(err)
 }

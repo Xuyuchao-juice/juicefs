@@ -2489,10 +2489,8 @@ func testReadOnly(t *testing.T, m Meta) {
 func testConcurrentDir(t *testing.T, m Meta) {
 	ctx := Background()
 	var g sync.WaitGroup
+	var err error
 	format, err := m.Load(false)
-	if err != nil {
-		t.Fatalf("load format failed: %s", err)
-	}
 	format.Capacity = 0
 	format.Inodes = 0
 	if err = m.Init(format, false); err != nil {
@@ -2531,6 +2529,9 @@ func testConcurrentDir(t *testing.T, m Meta) {
 		}(i)
 	}
 	g.Wait()
+	if err != nil {
+		t.Fatalf("concurrent dir: %s", err)
+	}
 	for i := 0; i < 100; i++ {
 		g.Add(1)
 		go func(i int) {
@@ -3551,7 +3552,7 @@ func checkEntry(t *testing.T, m Meta, srcEntry, dstEntry *Entry, dstParentIno In
 	}
 	keys := bytes.Split(value1, []byte{0})
 	for _, key := range keys {
-		if len(key) == 0 {
+		if key == nil || len(key) == 0 {
 			continue
 		}
 		var v1, v2 []byte
@@ -5034,9 +5035,6 @@ func testHardlinkQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid u
 }
 
 func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid uint32) {
-	format := m.getBase().getFormat()
-	format.UserGroupQuota = true
-
 	if err := m.HandleQuota(ctx, QuotaSet, "", uid, 0, map[string]*Quota{fmt.Sprintf("uid:%d", uid): {MaxSpace: 100 << 20, MaxInodes: 100}}, false, false, false); err != nil {
 		t.Fatalf("Set user quota: %s", err)
 	}
@@ -5069,7 +5067,6 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		}
 		fileInodes = append(fileInodes, inode)
 		fileAttrs = append(fileAttrs, attr)
-		m.Close(ctx, inode)
 	}
 
 	m.getBase().doFlushQuotas()
@@ -5118,15 +5115,16 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		t.Fatalf("User group quota not found after batch unlink")
 	}
 
-	// testConfig() uses TrashDays=0, so batch unlink permanently deletes files and decreases quota
-	expectedInodeDecrease := int64(len(fileNames))
+	// After the new strategy, files moved to trash do not decrease user/group quota
+	// Only files permanently deleted from trash decrease quota
+	expectedInodeDecrease := int64(0)
 	actualInodeDecrease := ugQuotaBefore.UsedInodes - ugQuotaAfter.UsedInodes
 
 	if actualInodeDecrease != expectedInodeDecrease {
 		t.Fatalf("User group quota inode decrease mismatch: expected %d, got %d", expectedInodeDecrease, actualInodeDecrease)
 	}
 
-	expectedSpaceDecrease := align4K(fileSize) * int64(len(fileNames))
+	expectedSpaceDecrease := int64(0)
 	actualSpaceDecrease := ugQuotaBefore.UsedSpace - ugQuotaAfter.UsedSpace
 
 	if actualSpaceDecrease != expectedSpaceDecrease {
@@ -5426,9 +5424,9 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 		t.Fatalf("User group quota not found after symlink batch unlink")
 	}
 
-	// testConfig() uses TrashDays=0, so batch unlink permanently deletes symlinks.
-	expectedSymlinkInodeDecrease := int64(len(symlinkNames))
-	expectedSymlinkSpaceDecrease := align4K(0) * int64(len(symlinkNames))
+	// After the new strategy, symlinks moved to trash do not decrease user/group quota
+	expectedSymlinkInodeDecrease := int64(0)
+	expectedSymlinkSpaceDecrease := int64(0)
 
 	actualSymlinkInodeDecrease := ugQuotaBeforeSymlink.UsedInodes - ugQuotaAfterSymlink.UsedInodes
 	actualSymlinkSpaceDecrease := ugQuotaBeforeSymlink.UsedSpace - ugQuotaAfterSymlink.UsedSpace

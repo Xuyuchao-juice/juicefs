@@ -2465,9 +2465,7 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			m.fileDeleted(opened, false, dino, dn.Length)
 		}
 		m.updateStats(newSpace, newInode)
-		if newSpace != 0 || newInode != 0 {
-			m.updateUserGroupStat(ctx, dn.Uid, dn.Gid, newSpace, newInode)
-		}
+		m.updateUserGroupStat(ctx, dn.Uid, dn.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }
@@ -2592,7 +2590,7 @@ func (m *dbMeta) doReaddir(ctx Context, inode Ino, plus uint8, entries *[]*Entry
 	}))
 }
 
-func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *batchUnlinkResult, skipCheckTrash ...bool) syscall.Errno {
+func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *dirStat, skipCheckTrash ...bool) syscall.Errno {
 	if len(entries) == 0 {
 		return 0
 	}
@@ -2799,7 +2797,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								nodesDel = append(nodesDel, info.e.Inode)
 								batchFsSpace -= entrySpace
 								batchFsInodes--
-								appendUGQuotaDelta(batchUserGroupQuotas, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
+								recordUGQuota(batchUserGroupQuotas, info.n.Uid, info.n.Gid, -entrySpace, -1)
 							}
 						case TypeSymlink:
 							// symlink: record for batched delete from symlink table
@@ -2812,7 +2810,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result
 								entrySpace = align4K(0)
 								batchFsSpace -= entrySpace
 								batchFsInodes--
-								appendUGQuotaDelta(batchUserGroupQuotas, info.n.Uid, info.n.Gid, info.n.Nlink, info.n.Type, info.n.Length)
+								recordUGQuota(batchUserGroupQuotas, info.n.Uid, info.n.Gid, -entrySpace, -1)
 							}
 						}
 						xattrsDel = append(xattrsDel, info.e.Inode)
@@ -3051,6 +3049,7 @@ func (m *dbMeta) doDeleteSustainedInode(sid uint64, inode Ino) error {
 	if err == nil && newSpace < 0 {
 		m.updateStats(newSpace, -1)
 		m.tryDeleteFileData(inode, n.Length, false)
+		m.updateUserGroupStat(Background(), n.Uid, n.Gid, newSpace, 0)
 	}
 	return err
 }
@@ -3259,9 +3258,7 @@ func (m *dbMeta) CopyFileRange(ctx Context, fin Ino, offIn uint64, fout Ino, off
 	}, fout)
 	if err == nil {
 		m.updateParentStat(ctx, fout, nout.Parent, newLength, newSpace)
-		if newSpace > 0 {
-			m.updateUserGroupStat(ctx, nout.Uid, nout.Gid, newSpace, 0)
-		}
+		m.updateUserGroupStat(ctx, nout.Uid, nout.Gid, newSpace, 0)
 	}
 	return errno(err)
 }
@@ -5196,16 +5193,7 @@ func (m *dbMeta) doBatchClone(ctx Context, srcParent Ino, dstParent Ino, entries
 			result.length += int64(sn.Length)
 			result.space += entrySpace
 			result.inodes++
-			key := ugKey(info.dstNode.Uid, info.dstNode.Gid)
-			if delta, ok := result.userGroupQuotas[key]; ok {
-				delta.Space += entrySpace
-				delta.Inodes++
-			} else {
-				result.userGroupQuotas[key] = &userGroupQuotaDelta{
-					Uid: info.dstNode.Uid, Gid: info.dstNode.Gid,
-					Space: entrySpace, Inodes: 1,
-				}
-			}
+			recordUGQuota(result.userGroupQuotas, info.dstNode.Uid, info.dstNode.Gid, entrySpace, 1)
 		}
 
 		if err := mustInsert(s, nodesIns...); err != nil {

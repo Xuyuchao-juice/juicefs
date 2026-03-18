@@ -1725,7 +1725,7 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 	return errno(err)
 }
 
-func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *batchUnlinkResult, skipCheckTrash ...bool) syscall.Errno {
+func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, result *dirStat, skipCheckTrash ...bool) syscall.Errno {
 	if len(entries) == 0 {
 		return 0
 	}
@@ -1969,7 +1969,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 								batchFsInodes--
 								stats[m.usedSpaceKey()] -= align4K(info.attr.Length)
 								stats[m.totalInodesKey()]--
-								appendUGQuotaDelta(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
+								recordUGQuota(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, -align4K(info.attr.Length), -1)
 							}
 						case TypeSymlink:
 							keys = append(keys, m.symKey(info.inode))
@@ -1980,7 +1980,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, res
 							batchFsInodes--
 							stats[m.usedSpaceKey()] -= align4K(0)
 							stats[m.totalInodesKey()]--
-							appendUGQuotaDelta(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, info.attr.Nlink, info.typ, info.attr.Length)
+							recordUGQuota(batchUserGroupQuotas, info.attr.Uid, info.attr.Gid, -align4K(0), -1)
 						}
 						keys = append(keys, m.xattrKey(info.inode))
 						if info.attr.Parent == 0 {
@@ -2822,6 +2822,7 @@ func (m *redisMeta) doDeleteSustainedInode(sid uint64, inode Ino) error {
 	if err == nil && newSpace < 0 {
 		m.updateStats(newSpace, -1)
 		m.tryDeleteFileData(inode, attr.Length, false)
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, 0)
 	}
 	return err
 }
@@ -3048,6 +3049,7 @@ func (m *redisMeta) CopyFileRange(ctx Context, fin Ino, offIn uint64, fout Ino, 
 	}, m.inodeKey(fout), m.inodeKey(fin))
 	if err == nil {
 		m.updateParentStat(ctx, fout, attr.Parent, newLength, newSpace)
+		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, 0)
 	}
 	return errno(err)
 }
