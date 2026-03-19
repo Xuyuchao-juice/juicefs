@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -587,14 +586,9 @@ func (m *baseMeta) HandleQuota(ctx Context, cmd uint8, qkey string, qtype uint32
 		}
 		key = uint64(inode)
 	} else if qtype == UserQuotaType || qtype == GroupQuotaType {
-		// Parse the quotaKey in format "uid:xxx" or "gid:xxx"
-		parts := strings.Split(qkey, ":")
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid quota key format: %s", qkey)
-		}
-		id, err := strconv.ParseUint(parts[1], 10, 64)
+		id, err := strconv.ParseUint(qkey, 10, 64)
 		if err != nil {
-			return fmt.Errorf("parse quota key: %s", err)
+			return fmt.Errorf("parse quota key %q: %s", qkey, err)
 		}
 		key = id
 	} else if cmd == QuotaList || cmd == QuotaCheck {
@@ -642,7 +636,7 @@ func (m *baseMeta) handleQuotaSet(ctx Context, qtype uint32, key uint64, dpath s
 				logger.Warnf("init user group quota: %s", err)
 			}
 		}
-		quota = quotas[fmt.Sprintf("uid:%d", key)]
+		quota = quotas[fmt.Sprintf("%d", key)]
 	case GroupQuotaType:
 		if !format.UserGroupQuota {
 			format.UserGroupQuota = true
@@ -652,7 +646,7 @@ func (m *baseMeta) handleQuotaSet(ctx Context, qtype uint32, key uint64, dpath s
 				logger.Warnf("init user group quota: %s", err)
 			}
 		}
-		quota = quotas[fmt.Sprintf("gid:%d", key)]
+		quota = quotas[fmt.Sprintf("%d", key)]
 	}
 	if quota == nil {
 		return nil

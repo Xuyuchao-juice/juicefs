@@ -3244,7 +3244,7 @@ func (m *kvMeta) doCleanUserGroupUsage(ctx Context, qtype uint32) error {
 	if err != nil {
 		return fmt.Errorf("failed to scan %s quotas: %w", prefix, err)
 	}
- 	return m.txn(ctx, func(tx *kvTxn) error {		
+	return m.txn(ctx, func(tx *kvTxn) error {
 		for k, v := range pairs {
 			if len(v) != 32 {
 				continue

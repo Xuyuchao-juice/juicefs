@@ -138,7 +138,7 @@ func quota(c *cli.Context) error {
 	}
 
 	var uid, gid uint32
-	var qkey, quotaType string
+	var qkey string
 	var qtype uint32
 	validateID := func(name string) uint32 {
 		id := c.Uint64(name)
@@ -153,7 +153,6 @@ func quota(c *cli.Context) error {
 	if c.IsSet("uid") {
 		uid = validateID("uid")
 		qkey = fmt.Sprintf("%d", uid)
-		quotaType = "user"
 		qtype = meta.UserQuotaType
 		if c.IsSet("gid") {
 			logger.Fatalf("Cannot specify both --uid and --gid at the same time")
@@ -164,14 +163,12 @@ func quota(c *cli.Context) error {
 	} else if c.IsSet("gid") {
 		gid = validateID("gid")
 		qkey = fmt.Sprintf("%d", gid)
-		quotaType = "group"
 		qtype = meta.GroupQuotaType
 		if c.IsSet("path") {
 			logger.Fatalf("Cannot specify both --gid and --path at the same time")
 		}
 	} else {
 		qkey = c.String("path")
-		quotaType = "directory"
 		qtype = meta.DirQuotaType
 		if qkey == "" {
 			switch cmd {
@@ -179,7 +176,6 @@ func quota(c *cli.Context) error {
 				qtype = 0xffffffff
 			case meta.QuotaCheck:
 				qtype = 0xffffffff
-				quotaType = "all"
 			default:
 				logger.Fatalf("Please specify the directory with `--path <dir>` option")
 			}
@@ -216,17 +212,19 @@ func quota(c *cli.Context) error {
 		return nil
 	}
 
-	printQuotaResult(quotaType, qs)
+	printQuotaResult(qtype, qs)
 	return nil
 }
 
-func printQuotaResult(quotaType string, qs map[string]*meta.Quota) {
+func printQuotaResult(qtype uint32, qs map[string]*meta.Quota) {
 	result := make([][]string, 1, len(qs)+1)
-	switch quotaType {
-	case "user":
+	switch qtype {
+	case meta.UserQuotaType:
 		result[0] = []string{"User ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
-	case "group":
+	case meta.GroupQuotaType:
 		result[0] = []string{"Group ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
+	case 0xffffffff:
+		result[0] = []string{"Path/ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
 	default:
 		result[0] = []string{"Path", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
 	}
@@ -260,9 +258,9 @@ func printQuotaResult(quotaType string, qs map[string]*meta.Quota) {
 		}
 
 		identifier := p
-		if quotaType == "user" {
+		if qtype == meta.UserQuotaType {
 			identifier = fmt.Sprintf("UID:%s", p)
-		} else if quotaType == "group" {
+		} else if qtype == meta.GroupQuotaType {
 			identifier = fmt.Sprintf("GID:%s", p)
 		}
 		result = append(result, []string{identifier, size, used, usedR, itotal, iused, iusedR})
