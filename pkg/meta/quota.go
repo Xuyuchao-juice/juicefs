@@ -40,6 +40,7 @@ const (
 	DirQuotaType = iota
 	UserQuotaType
 	GroupQuotaType
+	AllQuotaType
 )
 
 type Quota struct {
@@ -589,8 +590,6 @@ func (m *baseMeta) HandleQuota(ctx Context, cmd uint8, qkey string, qtype uint32
 			return fmt.Errorf("parse quota key %q: %s", qkey, err)
 		}
 		key = id
-	} else {
-		return fmt.Errorf("invalid quota type: %d", qtype)
 	}
 
 	switch cmd {
@@ -601,7 +600,7 @@ func (m *baseMeta) HandleQuota(ctx Context, cmd uint8, qkey string, qtype uint32
 	case QuotaDel:
 		return m.en.doDelQuota(ctx, qtype, key)
 	case QuotaList:
-		return m.handleQuotaList(ctx, qtype, key, quotas, qkey == "")
+		return m.handleQuotaList(ctx, qtype, key, quotas)
 	case QuotaCheck:
 		return m.handleQuotaCheck(ctx, qtype, key, dpath, strict, repair, quotas)
 	default:
@@ -861,7 +860,7 @@ func (m *baseMeta) handleQuotaGet(ctx Context, qtype uint32, key uint64, dpath s
 	return nil
 }
 
-func (m *baseMeta) handleQuotaList(ctx Context, qtype uint32, key uint64, quotas map[string]*Quota, listAll bool) error {
+func (m *baseMeta) handleQuotaList(ctx Context, qtype uint32, key uint64, quotas map[string]*Quota) error {
 	dirQuotas, userQuotas, groupQuotas, err := m.en.doLoadQuotas(ctx)
 	if err != nil {
 		return err
@@ -871,7 +870,7 @@ func (m *baseMeta) handleQuotaList(ctx Context, qtype uint32, key uint64, quotas
 		if v.MaxInodes == -1 && v.MaxSpace == -1 {
 			return false
 		}
-		if listAll {
+		if qtype == AllQuotaType {
 			return true
 		}
 		return qtype == targetType && k == key
@@ -902,12 +901,12 @@ func (m *baseMeta) handleQuotaList(ctx Context, qtype uint32, key uint64, quotas
 
 func (m *baseMeta) handleQuotaCheck(ctx Context, qtype uint32, key uint64, dpath string, strict, repair bool, quotas map[string]*Quota) error {
 	if qtype == UserQuotaType || qtype == GroupQuotaType {
-		return m.ugQuotaCheck(ctx, repair, quotas)
+		return m.checkUGUsage(ctx, repair, quotas)
 	}
-	return m.dirQuotaCheck(ctx, qtype, key, dpath, strict, repair, quotas)
+	return m.checkDirUsage(ctx, qtype, key, dpath, strict, repair, quotas)
 }
 
-func (m *baseMeta) dirQuotaCheck(ctx Context, qtype uint32, key uint64, dpath string, strict, repair bool, quotas map[string]*Quota) error {
+func (m *baseMeta) checkDirUsage(ctx Context, qtype uint32, key uint64, dpath string, strict, repair bool, quotas map[string]*Quota) error {
 	q, err := m.en.doGetQuota(ctx, qtype, key)
 	if err != nil {
 		return err
@@ -953,7 +952,7 @@ func (m *baseMeta) dirQuotaCheck(ctx Context, qtype uint32, key uint64, dpath st
 	return fmt.Errorf("quota of %s is inconsistent, please repair it with --repair flag", dpath)
 }
 
-func (m *baseMeta) checkQuotaUsage(usageMap map[uint64]*Summary, quotaMap map[uint64]*Quota, qtype uint32) bool {
+func (m *baseMeta) compareUGUsage(usageMap map[uint64]*Summary, quotaMap map[uint64]*Quota, qtype uint32, retQuotas map[string]*Quota) bool {
 	var hasErr bool
 	idType := "uid"
 	if qtype == GroupQuotaType {
@@ -978,7 +977,9 @@ func (m *baseMeta) checkQuotaUsage(usageMap map[uint64]*Summary, quotaMap map[ui
 				humanize.Comma(q.UsedInodes), humanize.IBytes(uint64(q.UsedSpace)),
 				humanize.Comma(usedInodes), humanize.IBytes(uint64(usedSpace)))
 			hasErr = true
+			continue
 		}
+		retQuotas[fmt.Sprintf("%d", id)] = q
 	}
 	for id, q := range quotaMap {
 		if id == 0 {
@@ -1032,7 +1033,7 @@ func (m *baseMeta) repairUgUsage(ctx Context, qtype uint32, usageMap map[uint64]
 	return nil
 }
 
-func (m *baseMeta) ugQuotaCheck(ctx Context, repair bool, quotas map[string]*Quota) error {
+func (m *baseMeta) checkUGUsage(ctx Context, repair bool, quotas map[string]*Quota) error {
 	userUsage, groupUsage, err := m.scanGlobalUserGroupUsage(ctx)
 	if err != nil {
 		return fmt.Errorf("scan global user group usage: %w", err)
@@ -1042,8 +1043,8 @@ func (m *baseMeta) ugQuotaCheck(ctx Context, repair bool, quotas map[string]*Quo
 	if err != nil {
 		return fmt.Errorf("load user/group quotas: %w", err)
 	}
-	hasErr := m.checkQuotaUsage(userUsage, userQuotas, UserQuotaType)
-	hasErr = m.checkQuotaUsage(groupUsage, groupQuotas, GroupQuotaType) || hasErr
+	hasErr := m.compareUGUsage(userUsage, userQuotas, UserQuotaType, quotas)
+	hasErr = m.compareUGUsage(groupUsage, groupQuotas, GroupQuotaType, quotas) || hasErr
 
 	if !repair {
 		if hasErr {
