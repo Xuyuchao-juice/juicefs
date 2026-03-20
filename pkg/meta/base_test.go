@@ -3638,7 +3638,7 @@ func testQuota(t *testing.T, m Meta) {
 	}
 	delete(qs, p)
 
-	if err := m.HandleQuota(ctx, QuotaList, "", 0xffffffff, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list: %s", err)
 	} else {
 		if len(qs) != 3 {
@@ -3710,7 +3710,7 @@ func testQuota(t *testing.T, m Meta) {
 	}
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaList, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list: %s", err)
 	} else {
 		if len(qs) != 2 {
@@ -4555,7 +4555,7 @@ func testBasicQuotaOperations(t *testing.T, m Meta, ctx Context, uid, gid uint32
 	}
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaList, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list: %s", err)
 	} else {
 		if len(qs) < 2 {
@@ -4572,7 +4572,7 @@ func testBasicQuotaOperations(t *testing.T, m Meta, ctx Context, uid, gid uint32
 	}
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaList, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list after deletion: %s", err)
 	}
 
@@ -4734,7 +4734,7 @@ func testQuotaMixedTypes(t *testing.T, m Meta, ctx Context, uid, gid uint32) {
 	}
 
 	qs := make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaList, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list mixed quota types: %s", err)
 	}
 	if len(qs) < 4 {
@@ -4907,7 +4907,7 @@ func testHardlinkQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid u
 	time.Sleep(100 * time.Millisecond)
 
 	qs := make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota after file creation: %s", err)
 	}
 	ugQuotaAfterFile := qs[fmt.Sprintf("%d", uid)]
@@ -4932,7 +4932,7 @@ func testHardlinkQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid u
 	time.Sleep(100 * time.Millisecond)
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota after hardlink creation: %s", err)
 	}
 	ugQuotaAfterHardlink := qs[fmt.Sprintf("%d", uid)]
@@ -4984,7 +4984,7 @@ func testHardlinkQuota(t *testing.T, m Meta, ctx Context, parent Ino, uid, gid u
 	time.Sleep(100 * time.Millisecond)
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota after hardlink deletion: %s", err)
 	}
 	ugQuotaAfterUnlink := qs[fmt.Sprintf("%d", uid)]
@@ -5074,7 +5074,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 	time.Sleep(200 * time.Millisecond)
 
 	qs := make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota before batch unlink: %s", err)
 	}
 	ugQuotaBefore := qs[fmt.Sprintf("%d", uid)]
@@ -5108,7 +5108,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 	time.Sleep(200 * time.Millisecond)
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota after batch unlink: %s", err)
 	}
 	ugQuotaAfter := qs[fmt.Sprintf("%d", uid)]
@@ -5160,7 +5160,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 	time.Sleep(200 * time.Millisecond)
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota before hardlink unlink: %s", err)
 	}
 	ugQuotaBeforeHardlink := qs[fmt.Sprintf("%d", uid)]
@@ -5205,7 +5205,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 	time.Sleep(200 * time.Millisecond)
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota after hardlink unlink: %s", err)
 	}
 	ugQuotaAfterHardlink := qs[fmt.Sprintf("%d", uid)]
@@ -5268,7 +5268,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 	time.Sleep(200 * time.Millisecond)
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota before multi-hardlink batch unlink: %s", err)
 	}
 	ugQuotaBeforeMultiHardlink := qs[fmt.Sprintf("%d", uid)]
@@ -5312,7 +5312,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 	time.Sleep(200 * time.Millisecond)
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota after multi-hardlink batch unlink: %s", err)
 	}
 	ugQuotaAfterMultiHardlink := qs[fmt.Sprintf("%d", uid)]
@@ -5383,7 +5383,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 	time.Sleep(200 * time.Millisecond)
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota before symlink batch unlink: %s", err)
 	}
 	ugQuotaBeforeSymlink := qs[fmt.Sprintf("%d", uid)]
@@ -5417,7 +5417,7 @@ func testBatchUnlinkWithUserGroupQuota(t *testing.T, m Meta, ctx Context, parent
 	time.Sleep(200 * time.Millisecond)
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaGet, "", 0, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaGet, fmt.Sprintf("%d", uid), UserQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("Get user group quota after symlink batch unlink: %s", err)
 	}
 	ugQuotaAfterSymlink := qs[fmt.Sprintf("%d", uid)]

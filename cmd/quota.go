@@ -167,18 +167,14 @@ func quota(c *cli.Context) error {
 		if c.IsSet("path") {
 			logger.Fatalf("Cannot specify both --gid and --path at the same time")
 		}
-	} else {
+	} else if c.IsSet("path") {
 		qkey = c.String("path")
 		qtype = meta.DirQuotaType
-		if qkey == "" {
-			switch cmd {
-			case meta.QuotaList:
-				qtype = 0xffffffff
-			case meta.QuotaCheck:
-				qtype = 0xffffffff
-			default:
-				logger.Fatalf("Please specify the directory with `--path <dir>` option")
-			}
+	} else {
+		if cmd == meta.QuotaList {
+			qkey = "" // list all quotas
+		} else {
+			logger.Fatalf("Please specify the directory with `--path <dir>` option or specify user/group with `--uid <uid>`/`--gid <gid>` option")
 		}
 	}
 
@@ -212,21 +208,25 @@ func quota(c *cli.Context) error {
 		return nil
 	}
 
-	printQuotaResult(qtype, qs)
+	printQuotaResult(qtype, qs, cmd == meta.QuotaList && qkey == "")
 	return nil
 }
 
-func printQuotaResult(qtype uint32, qs map[string]*meta.Quota) {
+func printQuotaResult(qtype uint32, qs map[string]*meta.Quota, listAll bool) {
 	result := make([][]string, 1, len(qs)+1)
 	switch qtype {
 	case meta.UserQuotaType:
 		result[0] = []string{"User ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
 	case meta.GroupQuotaType:
 		result[0] = []string{"Group ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
-	case 0xffffffff:
-		result[0] = []string{"Path/ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
-	default:
+	case meta.DirQuotaType:
+		if listAll {
+			result[0] = []string{"Path/ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
+			break
+		}
 		result[0] = []string{"Path", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
+	default:
+		result[0] = []string{"Path/ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
 	}
 
 	paths := make([]string, 0, len(qs))

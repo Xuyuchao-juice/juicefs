@@ -3228,7 +3228,7 @@ func (m *kvMeta) doLoadQuotas(ctx Context) (map[uint64]*Quota, map[uint64]*Quota
 	return quotaMaps[0], quotaMaps[1], quotaMaps[2], nil
 }
 
-func (m *kvMeta) doCleanUserGroupUsage(ctx Context, qtype uint32) error {
+func (m *kvMeta) cleanUgUsage(ctx Context, qtype uint32) error {
 	if qtype != UserQuotaType && qtype != GroupQuotaType {
 		return fmt.Errorf("invalid quota type: %d", qtype)
 	}
