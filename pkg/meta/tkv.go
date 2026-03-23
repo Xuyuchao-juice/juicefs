@@ -1232,6 +1232,8 @@ func (m *kvMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 		} else {
 			attr.Mode = mode & ^cumask
 		}
+		// inherit storage class
+		attr.Tier = pattr.Tier
 
 		var updateParent bool
 		now := time.Now()
@@ -3215,17 +3217,43 @@ func (m *kvMeta) doLoadQuotas(ctx Context) (map[uint64]*Quota, map[uint64]*Quota
 				} else {
 					id = binary.BigEndian.Uint64([]byte(k[2:])) // skip prefix
 				}
-				quota := m.parseQuota(v)
-				if quota.MaxSpace < 0 && quota.MaxInodes < 0 {
-					continue
-				}
-				quotas[id] = quota
+				quotas[id] = m.parseQuota(v)
 			}
 		}
 		quotaMaps[i] = quotas
 	}
 
 	return quotaMaps[0], quotaMaps[1], quotaMaps[2], nil
+}
+
+func (m *kvMeta) cleanUgUsage(ctx Context, qtype uint32) error {
+	if qtype != UserQuotaType && qtype != GroupQuotaType {
+		return fmt.Errorf("invalid quota type: %d", qtype)
+	}
+
+	var prefix string
+	if qtype == UserQuotaType {
+		prefix = "QU"
+	} else {
+		prefix = "QG"
+	}
+
+	pairs, err := m.scanValues(ctx, m.fmtKey(prefix), -1, nil)
+	if err != nil {
+		return fmt.Errorf("failed to scan %s quotas: %w", prefix, err)
+	}
+	return m.txn(ctx, func(tx *kvTxn) error {
+		for k, v := range pairs {
+			if len(v) != 32 {
+				continue
+			}
+			quota := m.parseQuota(v)
+			quota.UsedSpace = 0
+			quota.UsedInodes = 0
+			tx.set([]byte(k), m.packQuota(quota))
+		}
+		return nil
+	})
 }
 
 func (m *kvMeta) doSyncVolumeStat(ctx Context) error {
@@ -3284,17 +3312,26 @@ func (m *kvMeta) doSyncVolumeStat(ctx Context) error {
 func (m *kvMeta) doFlushQuotas(ctx Context, quotas []*iQuota) error {
 	return m.txn(ctx, func(tx *kvTxn) error {
 		keys := make([][]byte, 0, len(quotas))
-		qs := make([]*Quota, 0, len(quotas))
+		qs := make([]*iQuota, 0, len(quotas))
 		for _, q := range quotas {
 			key, err := m.getQuotaKey(q.qtype, q.qkey)
 			if err != nil {
 				return err
 			}
 			keys = append(keys, key)
-			qs = append(qs, q.quota)
+			qs = append(qs, q)
 		}
 		for i, v := range tx.gets(keys...) {
 			if len(v) == 0 {
+				if qs[i].qtype == UserQuotaType || qs[i].qtype == GroupQuotaType {
+					quota := &Quota{
+						MaxSpace:   -1,
+						MaxInodes:  -1,
+						UsedSpace:  qs[i].quota.newSpace,
+						UsedInodes: qs[i].quota.newInodes,
+					}
+					tx.set(keys[i], m.packQuota(quota))
+				}
 				continue
 			}
 			if len(v) != 32 {
@@ -3302,8 +3339,8 @@ func (m *kvMeta) doFlushQuotas(ctx Context, quotas []*iQuota) error {
 				continue
 			}
 			q := m.parseQuota(v)
-			q.UsedSpace += qs[i].newSpace
-			q.UsedInodes += qs[i].newInodes
+			q.UsedSpace += qs[i].quota.newSpace
+			q.UsedInodes += qs[i].quota.newInodes
 			tx.set(keys[i], m.packQuota(q))
 		}
 		return nil
