@@ -216,16 +216,18 @@ func quota(c *cli.Context) error {
 
 func printQuotaResult(qtype uint32, qs map[string]*meta.Quota) {
 	result := make([][]string, 1, len(qs)+1)
+	var firstCol string
 	switch qtype {
 	case meta.UserQuotaType:
-		result[0] = []string{"User ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
+		firstCol = "User ID"
 	case meta.GroupQuotaType:
-		result[0] = []string{"Group ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
+		firstCol = "Group ID"
 	case meta.DirQuotaType:
-		result[0] = []string{"Path", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
+		firstCol = "Path"
 	default:
-		result[0] = []string{"Path/ID", "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
+		firstCol = "Path/ID"
 	}
+	result[0] = []string{firstCol, "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
 
 	paths := make([]string, 0, len(qs))
 	for p := range qs {
