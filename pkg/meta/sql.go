@@ -4697,22 +4697,44 @@ func (m *dbMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 			sessions = append(sessions, &DumpedSustained{k, v})
 		}
 
-		var qs []dirQuota
-		if err := s.Find(&qs); err != nil {
+		// 导出目录配额
+		var dirQuotaRows []dirQuota
+		if err := s.Find(&dirQuotaRows); err != nil {
 			return err
 		}
-		// todo Add user/group quota
-		dumpedQuotas := make(map[Ino]*DumpedQuota, len(qs))
-		for _, q := range qs {
-			dumpedQuotas[Ino(q.Inode)] = &DumpedQuota{q.MaxSpace, q.MaxInodes, 0, 0}
+		dirQuotas := make(map[Ino]*DumpedQuota, len(dirQuotaRows))
+		for _, q := range dirQuotaRows {
+			dirQuotas[Ino(q.Inode)] = &DumpedQuota{MaxSpace: q.MaxSpace, MaxInodes: q.MaxInodes, UsedSpace: q.UsedSpace, UsedInodes: q.UsedInodes}
+		}
+
+		// 导出用户配额
+		var userQuotaRows []userGroupQuota
+		if err := s.Where("qtype = ?", UserQuotaType).Find(&userQuotaRows); err != nil {
+			return err
+		}
+		userQuotas := make(map[uint64]*DumpedQuota, len(userQuotaRows))
+		for _, q := range userQuotaRows {
+			userQuotas[q.Qkey] = &DumpedQuota{MaxSpace: q.MaxSpace, MaxInodes: q.MaxInodes, UsedSpace: q.UsedSpace, UsedInodes: q.UsedInodes}
+		}
+
+		// 导出组配额
+		var groupQuotaRows []userGroupQuota
+		if err := s.Where("qtype = ?", GroupQuotaType).Find(&groupQuotaRows); err != nil {
+			return err
+		}
+		groupQuotas := make(map[uint64]*DumpedQuota, len(groupQuotaRows))
+		for _, q := range groupQuotaRows {
+			groupQuotas[q.Qkey] = &DumpedQuota{MaxSpace: q.MaxSpace, MaxInodes: q.MaxInodes, UsedSpace: q.UsedSpace, UsedInodes: q.UsedInodes}
 		}
 
 		dm := DumpedMeta{
-			Setting:   *m.getFormat(),
-			Counters:  counters,
-			Sustained: sessions,
-			DelFiles:  dels,
-			Quotas:    dumpedQuotas,
+			Setting:     *m.getFormat(),
+			Counters:    counters,
+			Sustained:   sessions,
+			DelFiles:    dels,
+			DirQuotas:   dirQuotas,
+			UserQuotas:  userQuotas,
+			GroupQuotas: groupQuotas,
 		}
 		if !keepSecret && dm.Setting.SecretKey != "" {
 			dm.Setting.SecretKey = "removed"
@@ -4927,7 +4949,12 @@ func (m *dbMeta) LoadMeta(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	m.loadDumpedQuotas(Background(), dm.Quotas)
+	m.loadDumpedQuotas(Background(), dm.DirQuotas, dm.UserQuotas, dm.GroupQuotas)
+	if len(dm.UserQuotas) > 0 || len(dm.GroupQuotas) > 0 {
+		if err := m.ScanUserGroupUsage(Background()); err != nil {
+			logger.Warnf("rebuild user/group quota usage failed: %v", err)
+		}
+	}
 	if err = m.loadDumpedACLs(Background()); err != nil {
 		return err
 	}

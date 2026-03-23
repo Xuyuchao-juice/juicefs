@@ -35,10 +35,22 @@
       "expire": 1637664458
     }
   ],
-  "Quotas": {
+  "DirQuotas": {
     "1": {
       "maxSpace": 1073741824,
       "maxInodes": 100
+    }
+  },
+  "UserQuotas": {
+    "501": {
+      "maxSpace": 1099511627776,
+      "maxInodes": 1000000
+    }
+  },
+  "GroupQuotas": {
+    "20": {
+      "maxSpace": 2199023255552,
+      "maxInodes": 2000000
     }
   },
   "FSTree": {

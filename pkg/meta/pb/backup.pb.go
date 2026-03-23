@@ -417,6 +417,8 @@ type Quota struct {
 	MaxInodes  int64  `protobuf:"varint,3,opt,name=maxInodes,proto3" json:"maxInodes,omitempty"`
 	UsedSpace  int64  `protobuf:"varint,4,opt,name=usedSpace,proto3" json:"usedSpace,omitempty"`
 	UsedInodes int64  `protobuf:"varint,5,opt,name=usedInodes,proto3" json:"usedInodes,omitempty"`
+	Type       uint32 `protobuf:"varint,6,opt,name=type,proto3" json:"type,omitempty"`
+	Key        uint64 `protobuf:"varint,7,opt,name=key,proto3" json:"key,omitempty"`
 }
 
 func (x *Quota) Reset() {
@@ -480,6 +482,20 @@ func (x *Quota) GetUsedSpace() int64 {
 func (x *Quota) GetUsedInodes() int64 {
 	if x != nil {
 		return x.UsedInodes
+	}
+	return 0
+}
+
+func (x *Quota) GetType() uint32 {
+	if x != nil {
+		return x.Type
+	}
+	return 0
+}
+
+func (x *Quota) GetKey() uint64 {
+	if x != nil {
+		return x.Key
 	}
 	return 0
 }

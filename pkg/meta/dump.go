@@ -95,10 +95,12 @@ type DumpedXattr struct {
 }
 
 type DumpedQuota struct {
-	MaxSpace   int64 `json:"maxSpace"`
-	MaxInodes  int64 `json:"maxInodes"`
-	UsedSpace  int64 `json:"-"`
-	UsedInodes int64 `json:"-"`
+	Type       uint8  `json:"type"`       // 0: DirQuota, 1: UserQuota, 2: GroupQuota
+	Key        uint64 `json:"key"`        // inode/uid/gid
+	MaxSpace   int64  `json:"maxSpace"`
+	MaxInodes  int64  `json:"maxInodes"`
+	UsedSpace  int64  `json:"-"`
+	UsedInodes int64  `json:"-"`
 }
 
 type DumpedACLEntry struct {
@@ -325,13 +327,16 @@ func (de *DumpedEntry) writeJsonWithOutEntry(bw *bufio.Writer, depth int) error 
 }
 
 type DumpedMeta struct {
-	Setting   Format
-	Counters  *DumpedCounters
-	Sustained []*DumpedSustained
-	DelFiles  []*DumpedDelFile
-	Quotas    map[Ino]*DumpedQuota `json:",omitempty"`
-	FSTree    *DumpedEntry         `json:",omitempty"`
-	Trash     *DumpedEntry         `json:",omitempty"`
+	Setting     Format
+	Counters    *DumpedCounters
+	Sustained   []*DumpedSustained
+	DelFiles    []*DumpedDelFile
+	Quotas      map[Ino]*DumpedQuota    `json:",omitempty"` // Deprecated: use DirQuotas instead
+	DirQuotas   map[Ino]*DumpedQuota    `json:",omitempty"`
+	UserQuotas  map[uint64]*DumpedQuota `json:",omitempty"`
+	GroupQuotas map[uint64]*DumpedQuota `json:",omitempty"`
+	FSTree      *DumpedEntry            `json:",omitempty"`
+	Trash       *DumpedEntry            `json:",omitempty"`
 }
 
 func (dm *DumpedMeta) validate() error {
@@ -356,11 +361,25 @@ func (dm *DumpedMeta) writeJsonWithOutTree(w io.Writer) (*bufio.Writer, error) {
 	return bw, nil
 }
 
-func (m *baseMeta) loadDumpedQuotas(ctx Context, quotas map[Ino]*DumpedQuota) {
-	// update quota
-	for inode, q := range quotas {
+func (m *baseMeta) loadDumpedQuotas(ctx Context, dirQuotas map[Ino]*DumpedQuota, userQuotas, groupQuotas map[uint64]*DumpedQuota) {
+	// 加载目录配额
+	for inode, q := range dirQuotas {
 		if _, err := m.en.doSetQuota(ctx, DirQuotaType, uint64(inode), &Quota{q.MaxSpace, q.MaxInodes, q.UsedSpace, q.UsedInodes, 0, 0}); err != nil {
-			logger.Warnf("reset quota of %d: %s", inode, err)
+			logger.Warnf("reset dir quota of %d: %s", inode, err)
+			continue
+		}
+	}
+	// 加载用户配额
+	for uid, q := range userQuotas {
+		if _, err := m.en.doSetQuota(ctx, UserQuotaType, uid, &Quota{q.MaxSpace, q.MaxInodes, q.UsedSpace, q.UsedInodes, 0, 0}); err != nil {
+			logger.Warnf("reset user quota of %d: %s", uid, err)
+			continue
+		}
+	}
+	// 加载组配额
+	for gid, q := range groupQuotas {
+		if _, err := m.en.doSetQuota(ctx, GroupQuotaType, gid, &Quota{q.MaxSpace, q.MaxInodes, q.UsedSpace, q.UsedInodes, 0, 0}); err != nil {
+			logger.Warnf("reset group quota of %d: %s", gid, err)
 			continue
 		}
 	}
@@ -452,9 +471,20 @@ func loadEntries(r io.Reader, load func(*DumpedEntry), addChunk func(*chunkKey))
 		case "DelFiles":
 			err = dec.Decode(&dm.DelFiles)
 		case "Quotas":
+			// 旧格式：目录配额
 			err = dec.Decode(&dm.Quotas)
+		case "DirQuotas":
+			err = dec.Decode(&dm.DirQuotas)
+		case "UserQuotas":
+			err = dec.Decode(&dm.UserQuotas)
+		case "GroupQuotas":
+			err = dec.Decode(&dm.GroupQuotas)
 		case "FSTree":
-			_, err = decodeEntry(dec, 0, counters, parents, dm.Quotas, refs, bar, load, addChunk)
+			// 兼容旧格式：如果 DirQuotas 为空但 Quotas 有值，则使用 Quotas
+			if len(dm.DirQuotas) == 0 && len(dm.Quotas) > 0 {
+				dm.DirQuotas = dm.Quotas
+			}
+			_, err = decodeEntry(dec, 0, counters, parents, dm.DirQuotas, refs, bar, load, addChunk)
 		case "Trash":
 			_, err = decodeEntry(dec, 1, counters, parents, nil, refs, bar, load, addChunk)
 		}

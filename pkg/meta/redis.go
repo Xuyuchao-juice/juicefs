@@ -4677,7 +4677,8 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 			sessions = append(sessions, &DumpedSustained{sid, inodes})
 		}
 	}
-	quotas := make(map[Ino]*DumpedQuota)
+	// 导出目录配额
+	dirQuotas := make(map[Ino]*DumpedQuota)
 	for k, v := range m.rdb.HGetAll(ctx, m.dirQuotaKey()).Val() {
 		inode, err := strconv.ParseUint(k, 10, 64)
 		if err != nil {
@@ -4690,7 +4691,41 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 		}
 		var quota DumpedQuota
 		quota.MaxSpace, quota.MaxInodes = m.parseQuota([]byte(v))
-		quotas[Ino(inode)] = &quota
+		dirQuotas[Ino(inode)] = &quota
+	}
+
+	// 导出用户配额
+	userQuotas := make(map[uint64]*DumpedQuota)
+	for k, v := range m.rdb.HGetAll(ctx, m.userQuotaKey()).Val() {
+		uid, err := strconv.ParseUint(k, 10, 64)
+		if err != nil {
+			logger.Warnf("parse uid: %s: %v", k, err)
+			continue
+		}
+		if len(v) != 16 {
+			logger.Warnf("invalid user quota string: %s", hex.EncodeToString([]byte(v)))
+			continue
+		}
+		var quota DumpedQuota
+		quota.MaxSpace, quota.MaxInodes = m.parseQuota([]byte(v))
+		userQuotas[uid] = &quota
+	}
+
+	// 导出组配额
+	groupQuotas := make(map[uint64]*DumpedQuota)
+	for k, v := range m.rdb.HGetAll(ctx, m.groupQuotaKey()).Val() {
+		gid, err := strconv.ParseUint(k, 10, 64)
+		if err != nil {
+			logger.Warnf("parse gid: %s: %v", k, err)
+			continue
+		}
+		if len(v) != 16 {
+			logger.Warnf("invalid group quota string: %s", hex.EncodeToString([]byte(v)))
+			continue
+		}
+		var quota DumpedQuota
+		quota.MaxSpace, quota.MaxInodes = m.parseQuota([]byte(v))
+		groupQuotas[gid] = &quota
 	}
 
 	dm := &DumpedMeta{
@@ -4703,9 +4738,11 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 			NextSession: cs[4],
 			NextTrash:   cs[5],
 		},
-		Sustained: sessions,
-		DelFiles:  dels,
-		Quotas:    quotas,
+		Sustained:   sessions,
+		DelFiles:    dels,
+		DirQuotas:   dirQuotas,
+		UserQuotas:  userQuotas,
+		GroupQuotas: groupQuotas,
 	}
 	if !keepSecret && dm.Setting.SecretKey != "" {
 		dm.Setting.SecretKey = "removed"
@@ -4895,7 +4932,14 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	m.loadDumpedQuotas(ctx, dm.Quotas)
+	m.loadDumpedQuotas(ctx, dm.DirQuotas, dm.UserQuotas, dm.GroupQuotas)
+	// 当前 JSON 格式不导出 UsedSpace/UsedInodes（字段 tag 为 `json:"-"`），
+	// 导入后需要重建 user/group used 值
+	if len(dm.UserQuotas) > 0 || len(dm.GroupQuotas) > 0 {
+		if err := m.ScanUserGroupUsage(ctx); err != nil {
+			logger.Warnf("rebuild user/group quota usage failed: %v", err)
+		}
+	}
 	if err = m.loadDumpedACLs(ctx); err != nil {
 		return err
 	}
