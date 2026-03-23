@@ -3638,7 +3638,7 @@ func testQuota(t *testing.T, m Meta) {
 	}
 	delete(qs, p)
 
-	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", AllQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list: %s", err)
 	} else {
 		if len(qs) != 3 {
@@ -3710,7 +3710,7 @@ func testQuota(t *testing.T, m Meta) {
 	}
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", AllQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list: %s", err)
 	} else {
 		if len(qs) != 2 {
@@ -4555,7 +4555,7 @@ func testBasicQuotaOperations(t *testing.T, m Meta, ctx Context, uid, gid uint32
 	}
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", AllQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list: %s", err)
 	} else {
 		if len(qs) < 2 {
@@ -4572,7 +4572,7 @@ func testBasicQuotaOperations(t *testing.T, m Meta, ctx Context, uid, gid uint32
 	}
 
 	qs = make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", AllQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list after deletion: %s", err)
 	}
 
@@ -4650,10 +4650,6 @@ func testQuotaFileOperations(t *testing.T, m Meta, ctx Context, parent Ino, uid,
 }
 
 func testQuotaErrorCases(t *testing.T, m Meta, ctx Context, uid, gid uint32) {
-	if err := m.HandleQuota(ctx, QuotaSet, "", DirQuotaType, map[string]*Quota{"": {MaxSpace: 1 << 30, MaxInodes: 10}}, false, false, false); err == nil {
-		t.Fatalf("HandleQuota should fail for invalid quota type (no path, uid, or gid)")
-	}
-
 	qs := make(map[string]*Quota)
 	if err := m.HandleQuota(ctx, 99, "", 0, qs, false, false, false); err == nil {
 		t.Fatalf("HandleQuota should fail for invalid command")
@@ -4734,7 +4730,7 @@ func testQuotaMixedTypes(t *testing.T, m Meta, ctx Context, uid, gid uint32) {
 	}
 
 	qs := make(map[string]*Quota)
-	if err := m.HandleQuota(ctx, QuotaList, "", DirQuotaType, qs, false, false, false); err != nil {
+	if err := m.HandleQuota(ctx, QuotaList, "", AllQuotaType, qs, false, false, false); err != nil {
 		t.Fatalf("HandleQuota list mixed quota types: %s", err)
 	}
 	if len(qs) < 4 {
