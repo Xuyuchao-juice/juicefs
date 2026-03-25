@@ -4732,7 +4732,7 @@ func (m *dbMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 			Counters:    counters,
 			Sustained:   sessions,
 			DelFiles:    dels,
-			DirQuotas:   dirQuotas,
+			Quotas:      dirQuotas,
 			UserQuotas:  userQuotas,
 			GroupQuotas: groupQuotas,
 		}
@@ -4949,7 +4949,7 @@ func (m *dbMeta) LoadMeta(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	m.loadDumpedQuotas(Background(), dm.DirQuotas, dm.UserQuotas, dm.GroupQuotas)
+	m.loadDumpedQuotas(Background(), dm.Quotas, dm.UserQuotas, dm.GroupQuotas)
 	if len(dm.UserQuotas) > 0 || len(dm.GroupQuotas) > 0 {
 		if err := m.ScanUserGroupUsage(Background()); err != nil {
 			logger.Warnf("rebuild user/group quota usage failed: %v", err)

@@ -4740,7 +4740,7 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 		},
 		Sustained:   sessions,
 		DelFiles:    dels,
-		DirQuotas:   dirQuotas,
+		Quotas:      dirQuotas,
 		UserQuotas:  userQuotas,
 		GroupQuotas: groupQuotas,
 	}
@@ -4932,7 +4932,7 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	m.loadDumpedQuotas(ctx, dm.DirQuotas, dm.UserQuotas, dm.GroupQuotas)
+	m.loadDumpedQuotas(ctx, dm.Quotas, dm.UserQuotas, dm.GroupQuotas)
 	// 当前 JSON 格式不导出 UsedSpace/UsedInodes（字段 tag 为 `json:"-"`），
 	// 导入后需要重建 user/group used 值
 	if len(dm.UserQuotas) > 0 || len(dm.GroupQuotas) > 0 {

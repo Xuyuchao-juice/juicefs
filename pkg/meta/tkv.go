@@ -3817,7 +3817,7 @@ func (m *kvMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 		},
 		Sustained:   sessions,
 		DelFiles:    dels,
-		DirQuotas:   dirQuotas,
+		Quotas:      dirQuotas,
 		UserQuotas:  userQuotas,
 		GroupQuotas: groupQuotas,
 	}
@@ -4020,7 +4020,7 @@ func (m *kvMeta) LoadMeta(r io.Reader) error {
 
 	// update nlinks and parents for hardlinks
 	st := make(map[Ino]int64)
-	defer m.loadDumpedQuotas(Background(), dm.DirQuotas, dm.UserQuotas, dm.GroupQuotas)
+	defer m.loadDumpedQuotas(Background(), dm.Quotas, dm.UserQuotas, dm.GroupQuotas)
 	defer func() {
 		if len(dm.UserQuotas) > 0 || len(dm.GroupQuotas) > 0 {
 			if err := m.ScanUserGroupUsage(Background()); err != nil {

@@ -46,13 +46,13 @@ message Xattr {
 }
 
 message Quota {
-  uint64 inode = 1;    // 兼容旧格式：目录配额 key
+  uint64 inode = 1;
   int64 maxSpace = 2;
   int64 maxInodes = 3;
   int64 usedSpace = 4;
   int64 usedInodes = 5;
-  uint32 type = 6;     // 新增：0 Dir, 1 User, 2 Group
-  uint64 key = 7;      // 新增：inode/uid/gid；若为 0 则回退使用 inode
+  uint32 type = 6;
+  uint64 key = 7;
 }
 
 message Stat {

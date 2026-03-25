@@ -35,7 +35,7 @@
       "expire": 1637664458
     }
   ],
-  "DirQuotas": {
+  "Quotas": {
     "1": {
       "maxSpace": 1073741824,
       "maxInodes": 100
