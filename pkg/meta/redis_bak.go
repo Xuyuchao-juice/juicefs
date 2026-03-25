@@ -448,7 +448,6 @@ func (m *redisMeta) dumpQuota(ctx Context, opt *DumpOption, ch chan<- *dumpedRes
 	for _, q := range dirQuotas {
 		quotas = append(quotas, q)
 	}
-
 	if err := m.dumpUGQuotas(ctx, &quotas, UserQuotaType, m.userQuotaKey(), m.userQuotaUsedInodesKey(), m.userQuotaUsedSpaceKey()); err != nil {
 		return err
 	}
