@@ -95,12 +95,10 @@ type DumpedXattr struct {
 }
 
 type DumpedQuota struct {
-	Type       uint8  `json:"type"` // 0: DirQuota, 1: UserQuota, 2: GroupQuota
-	Key        uint64 `json:"key"`  // inode/uid/gid
-	MaxSpace   int64  `json:"maxSpace"`
-	MaxInodes  int64  `json:"maxInodes"`
-	UsedSpace  int64  `json:"-"`
-	UsedInodes int64  `json:"-"`
+	MaxSpace   int64 `json:"maxSpace"`
+	MaxInodes  int64 `json:"maxInodes"`
+	UsedSpace  int64 `json:"-"`
+	UsedInodes int64 `json:"-"`
 }
 
 type DumpedACLEntry struct {

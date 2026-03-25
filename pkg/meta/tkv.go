@@ -3763,7 +3763,6 @@ func (m *kvMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 		sessions = append(sessions, &DumpedSustained{k, v})
 	}
 
-	// 导出目录配额
 	pairs, err := m.scanValues(ctx, m.fmtKey("QD"), -1, func(k, v []byte) bool {
 		return len(k) == 10 && len(v) == 32
 	})
@@ -3777,7 +3776,6 @@ func (m *kvMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 		dirQuotas[inode] = &DumpedQuota{MaxSpace: quota.MaxSpace, MaxInodes: quota.MaxInodes, UsedSpace: quota.UsedSpace, UsedInodes: quota.UsedInodes}
 	}
 
-	// 导出用户配额
 	userPairs, err := m.scanValues(ctx, m.fmtKey("QU"), -1, func(k, v []byte) bool {
 		return len(k) == 10 && len(v) == 32
 	})
@@ -3791,7 +3789,6 @@ func (m *kvMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 		userQuotas[uint64(uid)] = &DumpedQuota{MaxSpace: quota.MaxSpace, MaxInodes: quota.MaxInodes, UsedSpace: quota.UsedSpace, UsedInodes: quota.UsedInodes}
 	}
 
-	// 导出组配额
 	groupPairs, err := m.scanValues(ctx, m.fmtKey("QG"), -1, func(k, v []byte) bool {
 		return len(k) == 10 && len(v) == 32
 	})
@@ -4020,8 +4017,8 @@ func (m *kvMeta) LoadMeta(r io.Reader) error {
 
 	// update nlinks and parents for hardlinks
 	st := make(map[Ino]int64)
-	defer m.loadDumpedQuotas(Background(), dm.Quotas, dm.UserQuotas, dm.GroupQuotas)
 	defer func() {
+		m.loadDumpedQuotas(Background(), dm.Quotas, dm.UserQuotas, dm.GroupQuotas)
 		if len(dm.UserQuotas) > 0 || len(dm.GroupQuotas) > 0 {
 			if err := m.ScanUserGroupUsage(Background()); err != nil {
 				logger.Warnf("rebuild user/group quota usage failed: %v", err)

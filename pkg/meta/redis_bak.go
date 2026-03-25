@@ -372,7 +372,11 @@ func (m *redisMeta) loadUsage(ctx Context, quotaMap map[uint64]*pb.Quota, key, l
 		if q, ok := quotaMap[id]; !ok {
 			logger.Warnf("%s quota for used %s not found: %d", label, usageType, id)
 		} else {
-			val, _ := strconv.ParseInt(v, 10, 64)
+			val, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				logger.Warnf("parse used %s %s: %s: %v", usageType, label, k, err)
+				continue
+			}
 			setter(q, val)
 		}
 	}
