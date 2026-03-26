@@ -3818,8 +3818,7 @@ func (m *kvMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 		UserQuotas:  userQuotas,
 		GroupQuotas: groupQuotas,
 	}
-	// Don't export user/group quotas when dumping a subdirectory (not in root directory)
-	if m.root != RootInode {
+	if root != RootInode {
 		dm.UserQuotas = nil
 		dm.GroupQuotas = nil
 	}
