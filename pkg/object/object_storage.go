@@ -109,7 +109,7 @@ type FileSystem interface {
 	Chown(path string, owner, group string) error
 }
 
-var notSupported = utils.ENOTSUP
+var notSupported = utils.ErrNotSUP
 
 type DefaultObjectStorage struct{}
 
@@ -157,6 +157,10 @@ func (s DefaultObjectStorage) List(ctx context.Context, prefix, start, token, de
 
 func (s DefaultObjectStorage) ListAll(ctx context.Context, prefix, marker string, followLink bool) (<-chan Object, error) {
 	return nil, notSupported
+}
+
+func (s DefaultObjectStorage) Restore(ctx context.Context, key string) error {
+	return notSupported
 }
 
 type Creator func(bucket, accessKey, secretKey, token string) (ObjectStorage, error)
@@ -323,6 +327,39 @@ func TmpFilePath(parent, name string) string {
 	return filepath.Join(filepath.Dir(parent), ".jfs."+name+".tmp."+strconv.Itoa(rand.Int()))
 }
 
+type TierKey struct{}
+
+const defaultRestoreDays = 3
+
+type SupportTier interface {
+	SetTier(init Tiers)
+	GetStorageClass(ctx context.Context) string
+}
+
+type tierStorage struct {
+	sc    string
+	tiers map[uint8]Tier
+}
+
+func (b *tierStorage) GetStorageClass(ctx context.Context) string {
+	sc := b.sc
+	if id, ok := ctx.Value(TierKey{}).(uint8); ok {
+		if t, ok := b.tiers[id]; ok {
+			sc = t.Sc
+		} else {
+			logger.Warnf("invalid tier id: %d", id)
+		}
+	}
+	return sc
+}
+
+func (b *tierStorage) SetTier(init Tiers) {
+	if init == nil {
+		init = Tiers{}
+	}
+	b.tiers = init
+}
+
 type Tier struct {
 	ID uint8  `json:"ID"`
 	Sc string `json:"StorageClass"`
@@ -372,8 +409,16 @@ func (t Tiers) GetSc(id uint8) (string, bool) {
 	tInfo, ok := t[id]
 	return tInfo.Sc, ok
 }
+
 func NewTiers() Tiers {
 	t := make(Tiers)
 	t[0] = Tier{}
 	return t
+}
+
+func getOrDefaultScValue(v, defaultValue string) string {
+	if v == "" {
+		return defaultValue
+	}
+	return v
 }

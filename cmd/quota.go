@@ -134,7 +134,7 @@ func quota(c *cli.Context) error {
 	case "check":
 		cmd = meta.QuotaCheck
 	default:
-		logger.Fatalf("Invalid quota command: %s", c.Command.Name)
+		logger.Fatalf("Invalid quota command: %q", c.Command.Name)
 	}
 
 	var uid, gid uint32
@@ -143,10 +143,10 @@ func quota(c *cli.Context) error {
 	validateID := func(name string) uint32 {
 		id := c.Uint64(name)
 		if id == 0 {
-			logger.Fatalf("Invalid --%s: 0 is not allowed", name)
+			logger.Fatalf("Invalid --%q: 0 is not allowed", name)
 		}
 		if id > math.MaxUint32 {
-			logger.Fatalf("Invalid --%s: %d exceeds maximum value %d", name, id, math.MaxUint32)
+			logger.Fatalf("Invalid --%q: %d exceeds maximum value %d", name, id, math.MaxUint32)
 		}
 		return uint32(id)
 	}
@@ -229,12 +229,12 @@ func printQuotaResult(qtype uint32, qs map[string]*meta.Quota) {
 	}
 	result[0] = []string{firstCol, "Size", "Used", "Use%", "Inodes", "IUsed", "IUse%"}
 
-	paths := make([]string, 0, len(qs))
+	keys := make([]string, 0, len(qs))
 	for p := range qs {
-		paths = append(paths, p)
+		keys = append(keys, p)
 	}
-	sort.Strings(paths)
-	for _, p := range paths {
+	sort.Strings(keys)
+	for _, p := range keys {
 		q := qs[p]
 		if q.UsedSpace < 0 {
 			logger.Warnf("Used space of %s is negative (%d), please run `juicefs quota check` to fix it", p, q.UsedSpace)
@@ -257,13 +257,7 @@ func printQuotaResult(qtype uint32, qs map[string]*meta.Quota) {
 			iusedR = fmt.Sprintf("%d%%", q.UsedInodes*100/q.MaxInodes)
 		}
 
-		identifier := p
-		if qtype == meta.UserQuotaType {
-			identifier = fmt.Sprintf("UID:%s", p)
-		} else if qtype == meta.GroupQuotaType {
-			identifier = fmt.Sprintf("GID:%s", p)
-		}
-		result = append(result, []string{identifier, size, used, usedR, itotal, iused, iusedR})
+		result = append(result, []string{p, size, used, usedR, itotal, iused, iusedR})
 	}
 	printResult(result, 0, false)
 }

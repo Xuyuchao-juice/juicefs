@@ -34,7 +34,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -1015,7 +1014,10 @@ func (m *redisMeta) doLookup(ctx Context, parent Ino, name string, inode *Ino, a
 	return errno(err)
 }
 
-func (m *redisMeta) Resolve(ctx Context, parent Ino, path string, inode *Ino, attr *Attr) syscall.Errno {
+func (m *redisMeta) Resolve(ctx Context, parent Ino, path string, inode *Ino, attr *Attr, force bool) syscall.Errno {
+	if force {
+		return m.baseMeta.Resolve(ctx, parent, path, inode, attr, force)
+	}
 	if len(m.shaResolve) == 0 || m.conf.CaseInsensi || m.prefix != "" {
 		return syscall.ENOTSUP
 	}
@@ -1037,7 +1039,7 @@ func (m *redisMeta) Resolve(ctx Context, parent Ino, path string, inode *Ino, at
 		}
 		m.parseAttr([]byte(returnedAttr), attr)
 	} else if st == syscall.EAGAIN {
-		return m.Resolve(ctx, parent, path, inode, attr)
+		return m.Resolve(ctx, parent, path, inode, attr, force)
 	}
 	return st
 }
@@ -1428,6 +1430,10 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 			return err
 		}
 		m.parseAttr(a, &pattr)
+		ihGid := m.inheritGid(ctx, _type, pattr.Gid, pattr.Mode)
+		if m.checkGroupQuota(ctx, uint64(ihGid), align4K(0), 1) {
+			return syscall.EDQUOT
+		}
 		if pattr.Typ != TypeDirectory {
 			return syscall.ENOTDIR
 		}
@@ -1477,7 +1483,6 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 				*inode = TrashInode + Ino(next)
 			}
 		}
-
 		mode &= 07777
 		if pattr.DefaultACL != aclAPI.None && _type != TypeSymlink {
 			// inherit default acl
@@ -1532,24 +1537,8 @@ func (m *redisMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, m
 		attr.Mtimensec = uint32(now.Nanosecond())
 		attr.Ctime = now.Unix()
 		attr.Ctimensec = uint32(now.Nanosecond())
-		if ctx.Value(CtxKey("behavior")) == "Hadoop" || runtime.GOOS == "darwin" {
-			attr.Gid = pattr.Gid
-		} else if runtime.GOOS == "linux" && pattr.Mode&02000 != 0 {
-			attr.Gid = pattr.Gid
-			if _type == TypeDirectory {
-				attr.Mode |= 02000
-			} else if attr.Mode&02010 == 02010 && ctx.Uid() != 0 {
-				var found bool
-				for _, gid := range ctx.Gids() {
-					if gid == pattr.Gid {
-						found = true
-					}
-				}
-				if !found {
-					attr.Mode &= ^uint16(02000)
-				}
-			}
-		}
+		attr.Gid = ihGid
+		attr.Mode = m.inheritMode(ctx, _type, pattr.Gid, pattr.Mode, attr.Mode)
 
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Set(ctx, m.inodeKey(*inode), m.marshal(attr), 0)
@@ -4677,21 +4666,13 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 			sessions = append(sessions, &DumpedSustained{sid, inodes})
 		}
 	}
-	quotas := make(map[Ino]*DumpedQuota)
-	for k, v := range m.rdb.HGetAll(ctx, m.dirQuotaKey()).Val() {
-		inode, err := strconv.ParseUint(k, 10, 64)
-		if err != nil {
-			logger.Warnf("parse inode: %s: %v", k, err)
-			continue
-		}
-		if len(v) != 16 {
-			logger.Warnf("invalid quota string: %s", hex.EncodeToString([]byte(v)))
-			continue
-		}
-		var quota DumpedQuota
-		quota.MaxSpace, quota.MaxInodes = m.parseQuota([]byte(v))
-		quotas[Ino(inode)] = &quota
+	dirQuotasRaw := m.loadQuotasForDump(ctx, m.dirQuotaKey())
+	dirQuotas := make(map[Ino]*DumpedQuota, len(dirQuotasRaw))
+	for ino, quota := range dirQuotasRaw {
+		dirQuotas[Ino(ino)] = quota
 	}
+	userQuotas := m.loadQuotasForDump(ctx, m.userQuotaKey())
+	groupQuotas := m.loadQuotasForDump(ctx, m.groupQuotaKey())
 
 	dm := &DumpedMeta{
 		Setting: *m.getFormat(),
@@ -4703,9 +4684,16 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 			NextSession: cs[4],
 			NextTrash:   cs[5],
 		},
-		Sustained: sessions,
-		DelFiles:  dels,
-		Quotas:    quotas,
+		Sustained:   sessions,
+		DelFiles:    dels,
+		Quotas:      dirQuotas,
+		UserQuotas:  userQuotas,
+		GroupQuotas: groupQuotas,
+	}
+	root = m.checkRoot(root)
+	if root != RootInode {
+		dm.UserQuotas = nil
+		dm.GroupQuotas = nil
 	}
 	if !keepSecret && dm.Setting.SecretKey != "" {
 		dm.Setting.SecretKey = "removed"
@@ -4719,7 +4707,6 @@ func (m *redisMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fas
 	if err != nil {
 		return err
 	}
-	root = m.checkRoot(root)
 	progress := utils.NewProgress(false)
 	bar := progress.AddCountBar("Dumped entries", 1) // with root
 	useTotal := root == RootInode && !skipTrash
@@ -4895,7 +4882,7 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	m.loadDumpedQuotas(ctx, dm.Quotas)
+	m.loadDumpedQuotas(Background(), dm)
 	if err = m.loadDumpedACLs(ctx); err != nil {
 		return err
 	}
@@ -4967,6 +4954,25 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 	}
 	_, err = p.Exec(ctx)
 	return err
+}
+
+func (m *redisMeta) loadQuotasForDump(ctx Context, quotaKey string) map[uint64]*DumpedQuota {
+	quotas := make(map[uint64]*DumpedQuota)
+	for k, v := range m.rdb.HGetAll(ctx, quotaKey).Val() {
+		id, err := strconv.ParseUint(k, 10, 64)
+		if err != nil {
+			logger.Warnf("parse %d: %s: %v", id, k, err)
+			continue
+		}
+		if len(v) != 16 {
+			logger.Warnf("invalid %d quota string: %s", id, hex.EncodeToString([]byte(v)))
+			continue
+		}
+		var quota DumpedQuota
+		quota.MaxSpace, quota.MaxInodes = m.parseQuota([]byte(v))
+		quotas[id] = &quota
+	}
+	return quotas
 }
 
 func (m *redisMeta) doCloneEntry(ctx Context, srcIno Ino, parent Ino, name string, ino Ino, originAttr *Attr, cmode uint8, cumask uint16, top bool) syscall.Errno {

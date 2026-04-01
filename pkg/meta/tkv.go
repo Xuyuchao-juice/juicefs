@@ -26,7 +26,6 @@ import (
 	"io"
 	"math"
 	"math/rand"
-	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -1160,6 +1159,10 @@ func (m *kvMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 			return syscall.ENOENT
 		}
 		m.parseAttr(rs[0], &pattr)
+		ihGid := m.inheritGid(ctx, _type, pattr.Gid, pattr.Mode)
+		if m.checkGroupQuota(ctx, uint64(ihGid), align4K(0), 1) {
+			return syscall.EDQUOT
+		}
 		if pattr.Typ != TypeDirectory {
 			return syscall.ENOTDIR
 		}
@@ -1202,7 +1205,6 @@ func (m *kvMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 			next := tx.incrBy(key, 1)
 			*inode = TrashInode + Ino(next)
 		}
-
 		mode &= 07777
 		if pattr.DefaultACL != aclAPI.None && _type != TypeSymlink {
 			// inherit default acl
@@ -1260,24 +1262,8 @@ func (m *kvMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 		attr.Mtimensec = uint32(now.Nanosecond())
 		attr.Ctime = now.Unix()
 		attr.Ctimensec = uint32(now.Nanosecond())
-		if ctx.Value(CtxKey("behavior")) == "Hadoop" || runtime.GOOS == "darwin" {
-			attr.Gid = pattr.Gid
-		} else if runtime.GOOS == "linux" && pattr.Mode&02000 != 0 {
-			attr.Gid = pattr.Gid
-			if _type == TypeDirectory {
-				attr.Mode |= 02000
-			} else if attr.Mode&02010 == 02010 && ctx.Uid() != 0 {
-				var found bool
-				for _, gid := range ctx.Gids() {
-					if gid == pattr.Gid {
-						found = true
-					}
-				}
-				if !found {
-					attr.Mode &= ^uint16(02000)
-				}
-			}
-		}
+		attr.Gid = ihGid
+		attr.Mode = m.inheritMode(ctx, _type, pattr.Gid, pattr.Mode, attr.Mode)
 
 		tx.set(m.entryKey(parent, name), m.packEntry(_type, *inode))
 		if updateParent {
@@ -3763,17 +3749,47 @@ func (m *kvMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 		sessions = append(sessions, &DumpedSustained{k, v})
 	}
 
+	// Fetch dir quotas
 	pairs, err := m.scanValues(ctx, m.fmtKey("QD"), -1, func(k, v []byte) bool {
 		return len(k) == 10 && len(v) == 32
 	})
 	if err != nil {
 		return err
 	}
-	quotas := make(map[Ino]*DumpedQuota, len(pairs))
+	dirQuotas := make(map[Ino]*DumpedQuota, len(pairs))
 	for k, v := range pairs {
-		inode := m.decodeInode([]byte(k[2:]))
-		quota := m.parseQuota(v)
-		quotas[inode] = &DumpedQuota{quota.MaxSpace, quota.MaxInodes, 0, 0}
+		q := m.parseQuota(v)
+		dirQuotas[m.decodeInode([]byte(k[2:]))] = &DumpedQuota{
+			MaxSpace:   q.MaxSpace,
+			MaxInodes:  q.MaxInodes,
+			UsedSpace:  q.UsedSpace,
+			UsedInodes: q.UsedInodes,
+		}
+	}
+
+	// Fetch user and group quotas
+	ugQuotas := make(map[string]map[uint64]*DumpedQuota)
+	for _, prefix := range []string{"QU", "QG"} {
+		pairs, err := m.scanValues(ctx, m.fmtKey(prefix), -1, func(k, v []byte) bool {
+			return len(k) == 10 && len(v) == 32
+		})
+		if err != nil {
+			return err
+		}
+		quotas := make(map[uint64]*DumpedQuota, len(pairs))
+		for k, v := range pairs {
+			q := m.parseQuota(v)
+			if q.MaxSpace == -1 && q.MaxInodes == -1 {
+				continue
+			}
+			quotas[binary.BigEndian.Uint64([]byte(k[2:]))] = &DumpedQuota{
+				MaxSpace:   q.MaxSpace,
+				MaxInodes:  q.MaxInodes,
+				UsedSpace:  q.UsedSpace,
+				UsedInodes: q.UsedInodes,
+			}
+		}
+		ugQuotas[prefix] = quotas
 	}
 
 	dm := DumpedMeta{
@@ -3786,9 +3802,15 @@ func (m *kvMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 			NextSession: cs[4],
 			NextTrash:   cs[5],
 		},
-		Sustained: sessions,
-		DelFiles:  dels,
-		Quotas:    quotas,
+		Sustained:   sessions,
+		DelFiles:    dels,
+		Quotas:      dirQuotas,
+		UserQuotas:  ugQuotas["QU"],
+		GroupQuotas: ugQuotas["QG"],
+	}
+	if root != RootInode {
+		dm.UserQuotas = nil
+		dm.GroupQuotas = nil
 	}
 	if !keepSecret && dm.Setting.SecretKey != "" {
 		dm.Setting.SecretKey = "removed"
@@ -3989,7 +4011,9 @@ func (m *kvMeta) LoadMeta(r io.Reader) error {
 
 	// update nlinks and parents for hardlinks
 	st := make(map[Ino]int64)
-	defer m.loadDumpedQuotas(Background(), dm.Quotas)
+	defer func() {
+		m.loadDumpedQuotas(Background(), dm)
+	}()
 	return m.txn(Background(), func(tx *kvTxn) error {
 		for i, ps := range parents {
 			if len(ps) > 1 {

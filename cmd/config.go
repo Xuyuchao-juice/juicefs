@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -167,7 +168,7 @@ func config(ctx *cli.Context) error {
 	var msg strings.Builder
 	encrypted := format.KeyEncrypted
 	var newSc string
-	var newTierId uint8
+	var newTierID uint8
 	var oldTier object.Tier
 	var findTier bool
 
@@ -204,7 +205,7 @@ func config(ctx *cli.Context) error {
 					if p, err := filepath.Abs(new); err == nil {
 						new = p + "/"
 					} else {
-						logger.Fatalf("Failed to get absolute path of %s: %s", new, err)
+						logger.Fatalf("Failed to get absolute path of %q: %s", new, err)
 					}
 				}
 				msg.WriteString(fmt.Sprintf("%10s: %s -> %s\n", flag, format.Bucket, new))
@@ -316,15 +317,28 @@ func config(ctx *cli.Context) error {
 			format.MinClientVersion = "1.4.0-A"
 			clientVer = true
 		case "tier-id":
+			if !ctx.IsSet("tier-sc") {
+				logger.Fatalf("missing required flag: --tier-sc")
+			}
 			newSc = ctx.String("tier-sc")
-			newTierId = uint8(ctx.Int(flag))
-			oldTier, findTier = format.Tiers[newTierId]
+			newTierID = uint8(ctx.Int(flag))
+			oldTier, findTier = format.Tiers[newTierID]
+			if newSc == "" {
+				if !findTier {
+					msg.WriteString(fmt.Sprintf("storage class for tier %d is not defined in the config", newTierID))
+					break
+				}
+				delete(format.Tiers, newTierID)
+				msg.WriteString(fmt.Sprintf("remove tier %d\n", newTierID))
+				tier = true
+				break
+			}
 			if findTier && oldTier.Sc == newSc {
 				break
 			}
-			msg.WriteString(fmt.Sprintf("set tier %d -> %s\n", newTierId, newSc))
-			format.Tiers[newTierId] = object.Tier{
-				ID: newTierId,
+			msg.WriteString(fmt.Sprintf("set tier %d: %s\n", newTierID, newSc))
+			format.Tiers[newTierID] = object.Tier{
+				ID: newTierID,
 				Sc: newSc,
 			}
 			tier = true
@@ -337,12 +351,12 @@ func config(ctx *cli.Context) error {
 
 	if !ctx.Bool("force") {
 		yes := ctx.Bool("yes")
-		if storage {
+		if storage || (tier && newSc != "") {
 			blob, err := createStorage(*format)
 			if err != nil {
 				return err
 			}
-			if err = test(blob); err != nil {
+			if err = test(context.WithValue(context.Background(), object.TierKey{}, newTierID), blob); err != nil {
 				return err
 			}
 		}

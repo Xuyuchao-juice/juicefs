@@ -232,6 +232,15 @@ func syncActionFlags() []cli.Flag {
 			Name:  "mountpoint",
 			Usage: "the mount point for current volume (to follow symlink)",
 		},
+		&cli.BoolFlag{
+			Name:  "enable-checkpoint",
+			Usage: "enable checkpoint for resumable sync",
+		},
+		&cli.StringFlag{
+			Name:  "checkpoint-interval",
+			Value: "10s",
+			Usage: "interval to save checkpoint (default: 10s)",
+		},
 	})
 }
 
@@ -332,10 +341,10 @@ func createSyncStorage(uri string, conf *sync.Config) (object.ObjectStorage, err
 		if isFilePath(uri) {
 			absPath, err := filepath.Abs(uri)
 			if err != nil {
-				logger.Fatalf("invalid path: %s", err.Error())
+				logger.Fatalf("invalid path %q: %s", uri, err.Error())
 			}
 			if !strings.HasPrefix(absPath, "/") { // Windows path
-				absPath = "/" + strings.Replace(absPath, "\\", "/", -1)
+				absPath = "/" + strings.ReplaceAll(absPath, "\\", "/")
 			}
 			if strings.HasSuffix(uri, "/") {
 				absPath += "/"
@@ -362,7 +371,7 @@ func createSyncStorage(uri string, conf *sync.Config) (object.ObjectStorage, err
 	uri, token := extractToken(uri)
 	u, err := url.Parse(uri)
 	if err != nil {
-		logger.Fatalf("Can't parse %s: %s", uri, err.Error())
+		logger.Fatalf("Can't parse %q: %s", uri, err.Error())
 	}
 	user := u.User
 	var accessKey, secretKey string
@@ -416,14 +425,14 @@ func createSyncStorage(uri string, conf *sync.Config) (object.ObjectStorage, err
 
 	if conf.Links {
 		if _, ok := store.(object.SupportSymlink); !ok {
-			logger.Warnf("storage %s does not support symlink, ignore it", uri)
+			logger.Warnf("storage %q does not support symlink, ignore it", uri)
 			conf.Links = false
 		}
 	}
 
 	if conf.Perms {
 		if _, ok := store.(object.FileSystem); !ok {
-			logger.Warnf("%s is not a file system, can not preserve permissions", store)
+			logger.Warnf("%q is not a file system, can not preserve permissions", store)
 			conf.Perms = false
 		}
 	}
@@ -471,10 +480,10 @@ func doSync(c *cli.Context) error {
 	removePassword(srcURL, dstURL)
 	if runtime.GOOS == "windows" {
 		if !strings.Contains(srcURL, "://") {
-			srcURL = strings.Replace(srcURL, "\\", "/", -1)
+			srcURL = strings.ReplaceAll(srcURL, "\\", "/")
 		}
 		if !strings.Contains(dstURL, "://") {
-			dstURL = strings.Replace(dstURL, "\\", "/", -1)
+			dstURL = strings.ReplaceAll(dstURL, "\\", "/")
 		}
 	}
 	if strings.HasSuffix(srcURL, "/") != strings.HasSuffix(dstURL, "/") {
@@ -496,7 +505,7 @@ func doSync(c *cli.Context) error {
 		if os, ok := dst.(object.SupportStorageClass); ok {
 			err := os.SetStorageClass(config.StorageClass)
 			if err != nil {
-				logger.Errorf("set storage class %s: %s", config.StorageClass, err)
+				logger.Errorf("set storage class %q: %s", config.StorageClass, err)
 			}
 		}
 	}

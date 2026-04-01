@@ -586,7 +586,7 @@ func (m *baseMeta) HandleQuota(ctx Context, cmd uint8, qkey string, qtype uint32
 			return errors.New("no quota for any trash directory")
 		}
 		key = uint64(inode)
-	} else if qtype == UserQuotaType || qtype == GroupQuotaType {
+	} else if (qtype == UserQuotaType || qtype == GroupQuotaType) && cmd != QuotaCheck {
 		id, err := strconv.ParseUint(qkey, 10, 64)
 		if err != nil {
 			return fmt.Errorf("parse quota key %q: %s", qkey, err)
@@ -889,12 +889,12 @@ func (m *baseMeta) handleQuotaList(ctx Context, qtype uint32, key uint64, quotas
 	}
 	for uid, quota := range userQuotas {
 		if match(UserQuotaType, uid, quota) {
-			quotas[fmt.Sprintf("%d", uid)] = quota
+			quotas[fmt.Sprintf("uid:%d", uid)] = quota
 		}
 	}
 	for gid, quota := range groupQuotas {
 		if match(GroupQuotaType, gid, quota) {
-			quotas[fmt.Sprintf("%d", gid)] = quota
+			quotas[fmt.Sprintf("gid:%d", gid)] = quota
 		}
 	}
 	return nil
