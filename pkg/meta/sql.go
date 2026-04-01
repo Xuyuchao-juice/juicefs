@@ -1765,7 +1765,10 @@ func (m *dbMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 	}))
 }
 
-func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skipCheckTrash ...bool) syscall.Errno {
+func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, trashIno *Ino, skipCheckTrash ...bool) syscall.Errno {
+	if trashIno != nil {
+		*trashIno = 0
+	}
 	var trash Ino
 	if !(len(skipCheckTrash) == 1 && skipCheckTrash[0]) {
 		if st := m.checkTrash(parent, &trash); st != 0 {
@@ -1931,20 +1934,20 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 		}
 		m.updateStats(newSpace, newInode)
 		m.updateUserGroupStat(ctx, n.Uid, n.Gid, newSpace, newInode)
-	} else if err == nil && trash > 0 && n.Nlink > 0 {
-		trashSpace := align4K(0)
-		if n.Type == TypeFile {
-			trashSpace = align4K(n.Length)
-		}
-		m.updateTrashStats(ctx, trash, trashSpace, 1)
 	}
 	if err == nil && attr != nil {
 		m.parseAttr(&n, attr)
 	}
+	if err == nil && trash > 0 && n.Nlink > 0 && trashIno != nil {
+		*trashIno = trash
+	}
 	return errno(err)
 }
 
-func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, attr *Attr, skipCheckTrash ...bool) syscall.Errno {
+func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, attr *Attr, trashIno *Ino, skipCheckTrash ...bool) syscall.Errno {
+	if trashIno != nil {
+		*trashIno = 0
+	}
 	var trash Ino
 	if !(len(skipCheckTrash) == 1 && skipCheckTrash[0]) {
 		if st := m.checkTrash(parent, &trash); st != 0 {
@@ -2063,8 +2066,8 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, attr
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
 		m.updateUserGroupStat(ctx, n.Uid, n.Gid, -align4K(0), -1)
-	} else if err == nil && trash > 0 {
-		m.updateTrashStats(ctx, trash, align4K(0), 1)
+	} else if err == nil && trash > 0 && trashIno != nil {
+		*trashIno = trash
 	}
 	return errno(err)
 }
@@ -2097,7 +2100,10 @@ func (m *dbMeta) getNodes(s *xorm.Session, nodes ...*node) error {
 	return nil
 }
 
-func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tInode *Ino, attr, tAttr *Attr) syscall.Errno {
+func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tInode *Ino, attr, tAttr *Attr, trashIno *Ino) syscall.Errno {
+	if trashIno != nil {
+		*trashIno = 0
+	}
 	var trash Ino
 	if st := m.checkTrash(parentDst, &trash); st != 0 {
 		return st
@@ -2106,8 +2112,6 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 	var opened bool
 	var dino Ino
 	var dn node
-	var srcType uint8
-	var srcLength uint64
 	var newSpace, newInode int64
 	parentLocks := []Ino{parentDst}
 	if !parentSrc.IsTrash() { // there should be no conflict if parentSrc is in trash, relax lock to accelerate `restore` subcommand
@@ -2179,8 +2183,6 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		var sattr Attr
 		m.parseAttr(&sn, &sattr)
-		srcType = sattr.Typ
-		srcLength = sattr.Length
 		if parentSrc != parentDst && spattr.Mode&0o1000 != 0 && ctx.Uid() != 0 &&
 			ctx.Uid() != sattr.Uid && (ctx.Uid() != spattr.Uid || sattr.Typ == TypeDirectory) {
 			return syscall.EACCES
@@ -2450,64 +2452,8 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		return err
 	}, parentLocks...)
-	if err == nil {
-		srcSpace := align4K(0)
-		if srcType == TypeFile {
-			srcSpace = align4K(srcLength)
-		}
-		dstSpace := align4K(0)
-		if dn.Type == TypeFile {
-			dstSpace = align4K(dn.Length)
-		}
-
-		if exchange {
-			if parentSrc.IsTrash() && parentDst.IsTrash() {
-				deltaSpace := dstSpace - srcSpace
-				if deltaSpace != 0 && parentSrc != parentDst {
-					m.updateTrashStats(ctx, parentSrc, deltaSpace, 0)
-					m.updateTrashStats(ctx, parentDst, -deltaSpace, 0)
-				}
-			} else if parentSrc.IsTrash() {
-				deltaSpace := dstSpace - srcSpace
-				m.updateTrashStats(ctx, parentSrc, deltaSpace, 0)
-			} else if parentDst.IsTrash() {
-				deltaSpace := srcSpace - dstSpace
-				m.updateTrashStats(ctx, parentDst, deltaSpace, 0)
-			}
-		} else {
-			if parentSrc == parentDst {
-				if parentSrc.IsTrash() {
-					deltaSpace := int64(0)
-					deltaInodes := int64(0)
-					if dino > 0 {
-						deltaSpace -= dstSpace
-						deltaInodes--
-					}
-					if deltaSpace != 0 || deltaInodes != 0 {
-						m.updateTrashStats(ctx, parentSrc, deltaSpace, deltaInodes)
-					}
-				}
-			} else {
-				if parentSrc.IsTrash() {
-					m.updateTrashStats(ctx, parentSrc, -srcSpace, -1)
-				}
-				if parentDst.IsTrash() {
-					dstDeltaSpace := srcSpace
-					dstDeltaInodes := int64(1)
-					if dino > 0 {
-						dstDeltaSpace -= dstSpace
-						dstDeltaInodes--
-					}
-					if dstDeltaSpace != 0 || dstDeltaInodes != 0 {
-						m.updateTrashStats(ctx, parentDst, dstDeltaSpace, dstDeltaInodes)
-					}
-				}
-			}
-
-			if dino > 0 && trash > 0 {
-				m.updateTrashStats(ctx, trash, newSpace, newInode)
-			}
-		}
+	if err == nil && !exchange && dino > 0 && trash > 0 && trashIno != nil {
+		*trashIno = trash
 	}
 
 	if err == nil && !exchange && trash == 0 {
@@ -2640,9 +2586,15 @@ func (m *dbMeta) doReaddir(ctx Context, inode Ino, plus uint8, entries *[]*Entry
 	}))
 }
 
-func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta *dirStat, skipCheckTrash ...bool) syscall.Errno {
+func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta *dirStat, trashIno *Ino, trashDelta *dirStat, skipCheckTrash ...bool) syscall.Errno {
 	if len(entries) == 0 {
 		return 0
+	}
+	if trashIno != nil {
+		*trashIno = 0
+	}
+	if trashDelta != nil {
+		*trashDelta = dirStat{}
 	}
 
 	var trash Ino
@@ -2664,6 +2616,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		length uint64
 	}
 	delNodes := make(map[Ino]*dNode)
+	var totalTrashLength, totalTrashSpace, totalTrashInodes int64
 
 	batchSize := m.getTxnBatchNum()
 	for len(entries) > 0 {
@@ -2674,12 +2627,12 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		entries = entries[batchSize:]
 		var batchFsSpace, batchFsInodes int64
 		var batchDirLength, batchDirSpace, batchDirInodes int64
-		var batchTrashSpace, batchTrashInodes int64
+		var batchTrashSpace, batchTrashLength, batchTrashInodes int64
 		var deltas ugQuotaDeltas
 		err := m.txn(func(s *xorm.Session) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
-			batchTrashSpace, batchTrashInodes = 0, 0
+			batchTrashSpace, batchTrashLength, batchTrashInodes = 0, 0, 0
 			deltas = make(ugQuotaDeltas)
 			pn := node{Inode: parent}
 			ok, err := s.Get(&pn)
@@ -2887,11 +2840,15 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 					if info.trashName == "" {
 						info.trashName = m.trashEntry(parent, info.e.Inode, string(info.e.Name))
 					}
+					var trashLength int64
 					if info.n.Type == TypeFile {
 						batchTrashSpace += align4K(info.n.Length)
+						trashLength = int64(info.n.Length)
 					} else {
 						batchTrashSpace += align4K(0)
+						trashLength = 0
 					}
+					batchTrashLength += trashLength
 					batchTrashInodes++
 					edgesIns = append(edgesIns, &edge{
 						Parent: info.trash,
@@ -2976,9 +2933,9 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		delta.length += batchDirLength
 		delta.space += batchDirSpace
 		delta.inodes += batchDirInodes
-		if batchTrashSpace != 0 || batchTrashInodes != 0 {
-			m.updateTrashStats(ctx, trash, batchTrashSpace, batchTrashInodes)
-		}
+		totalTrashLength += batchTrashLength
+		totalTrashSpace += batchTrashSpace
+		totalTrashInodes += batchTrashInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
@@ -2988,6 +2945,12 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 	// outside of transaction: trigger data deletion callbacks
 	for inode, info := range delNodes {
 		m.fileDeleted(info.opened, parent.IsTrash(), inode, info.length)
+	}
+	if trashIno != nil && trashDelta != nil && trash > 0 && (totalTrashSpace != 0 || totalTrashInodes != 0) {
+		*trashIno = trash
+		trashDelta.length = totalTrashLength
+		trashDelta.space = totalTrashSpace
+		trashDelta.inodes = totalTrashInodes
 	}
 	return 0
 }

@@ -1280,7 +1280,10 @@ func (m *kvMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 	}, parent))
 }
 
-func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skipCheckTrash ...bool) syscall.Errno {
+func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, trashIno *Ino, skipCheckTrash ...bool) syscall.Errno {
+	if trashIno != nil {
+		*trashIno = 0
+	}
 	var trash Ino
 	if !(len(skipCheckTrash) == 1 && skipCheckTrash[0]) {
 		if st := m.checkTrash(parent, &trash); st != 0 {
@@ -1419,19 +1422,27 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 		}
 		m.updateStats(newSpace, newInode)
 		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, newInode)
-	} else if err == nil && trash > 0 && attr.Nlink > 0 {
-		trashSpace := align4K(0)
-		if _type == TypeFile {
-			trashSpace = align4K(attr.Length)
-		}
-		m.updateTrashStats(ctx, trash, trashSpace, 1)
+	} else if err == nil && trash > 0 && attr.Nlink > 0 && trashIno != nil {
+		*trashIno = trash
 	}
 	return errno(err)
 }
 
-func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta *dirStat, skipCheckTrash ...bool) syscall.Errno {
+func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta *dirStat, trashIno *Ino, trashDelta *dirStat, skipCheckTrash ...bool) syscall.Errno {
 	if len(entries) == 0 {
 		return 0
+	}
+	if trashIno != nil {
+		*trashIno = 0
+	}
+	if trashDelta != nil {
+		*trashDelta = dirStat{}
+	}
+	var trash Ino
+	if len(skipCheckTrash) == 0 || !skipCheckTrash[0] {
+		if st := m.checkTrash(parent, &trash); st != 0 {
+			return st
+		}
 	}
 
 	// Each entry averages ~6 tx operations, so batch size should be 10000/6
@@ -1454,6 +1465,7 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		opened bool
 		length uint64
 	}
+	var totalTrashLength, totalTrashSpace, totalTrashInodes int64
 
 	for len(entries) > 0 {
 		batchSize := batchNum
@@ -1463,23 +1475,16 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		batch := entries[:batchSize]
 		entries = entries[batchSize:]
 
-		var trash Ino
-		if len(skipCheckTrash) == 0 || !skipCheckTrash[0] {
-			if st := m.checkTrash(parent, &trash); st != 0 {
-				return st
-			}
-		}
-
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
-		var batchTrashSpace, batchTrashInodes int64
+		var batchTrashSpace, batchTrashLength, batchTrashInodes int64
 		var batchFsSpace, batchFsInodes int64
 		var deltas ugQuotaDeltas
 		var delNodes map[Ino]*dNode
 
 		err := m.txn(ctx, func(tx *kvTxn) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
-			batchTrashSpace, batchTrashInodes = 0, 0
+			batchTrashSpace, batchTrashLength, batchTrashInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
 			deltas = make(ugQuotaDeltas)
 			delNodes = make(map[Ino]*dNode)
@@ -1680,11 +1685,15 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 					if info.trashName == "" {
 						info.trashName = m.trashEntry(parent, info.inode, info.name)
 					}
+					var trashLength int64
 					if info.typ == TypeFile {
 						batchTrashSpace += align4K(info.attr.Length)
+						trashLength = int64(info.attr.Length)
 					} else {
 						batchTrashSpace += align4K(0)
+						trashLength = 0
 					}
+					batchTrashLength += trashLength
 					batchTrashInodes++
 					tx.set(m.entryKey(info.trash, info.trashName), info.buf)
 					if info.attr.Parent == 0 {
@@ -1716,18 +1725,27 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		delta.length += batchDirLength
 		delta.space += batchDirSpace
 		delta.inodes += batchDirInodes
-		if batchTrashSpace != 0 || batchTrashInodes != 0 {
-			m.updateTrashStats(ctx, trash, batchTrashSpace, batchTrashInodes)
-		}
+		totalTrashLength += batchTrashLength
+		totalTrashSpace += batchTrashSpace
+		totalTrashInodes += batchTrashInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
 	}
+	if trashIno != nil && trashDelta != nil && trash > 0 && (totalTrashSpace != 0 || totalTrashInodes != 0) {
+		*trashIno = trash
+		trashDelta.length = totalTrashLength
+		trashDelta.space = totalTrashSpace
+		trashDelta.inodes = totalTrashInodes
+	}
 	return 0
 }
 
-func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldAttr *Attr, skipCheckTrash ...bool) syscall.Errno {
+func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldAttr *Attr, trashIno *Ino, skipCheckTrash ...bool) syscall.Errno {
+	if trashIno != nil {
+		*trashIno = 0
+	}
 	var trash Ino
 	var attr Attr
 	if !(len(skipCheckTrash) == 1 && skipCheckTrash[0]) {
@@ -1826,13 +1844,16 @@ func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldA
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
 		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, -align4K(0), -1)
-	} else if err == nil && trash > 0 {
-		m.updateTrashStats(ctx, trash, align4K(0), 1)
+	} else if err == nil && trash > 0 && trashIno != nil {
+		*trashIno = trash
 	}
 	return errno(err)
 }
 
-func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tInode *Ino, attr, tAttr *Attr) syscall.Errno {
+func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tInode *Ino, attr, tAttr *Attr, trashIno *Ino) syscall.Errno {
+	if trashIno != nil {
+		*trashIno = 0
+	}
 	var trash Ino
 	if st := m.checkTrash(parentDst, &trash); st != 0 {
 		return st
@@ -1842,8 +1863,6 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 	var dino Ino
 	var dtyp uint8
 	var tattr Attr
-	var srcType uint8
-	var srcLength uint64
 	var newSpace, newInode int64
 	parentLocks := []Ino{parentDst}
 	if !parentSrc.IsTrash() { // there should be no conflict if parentSrc is in trash, relax lock to accelerate `restore` subcommand
@@ -1898,8 +1917,6 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			return syscall.EPERM
 		}
 		m.parseAttr(rs[2], &iattr)
-		srcType = iattr.Typ
-		srcLength = iattr.Length
 		if (sattr.Flags&FlagAppend) != 0 || (sattr.Flags&FlagImmutable) != 0 || (dattr.Flags&FlagImmutable) != 0 || (iattr.Flags&FlagAppend) != 0 || (iattr.Flags&FlagImmutable) != 0 {
 			return syscall.EPERM
 		}
@@ -2099,58 +2116,9 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		return nil
 	}, parentLocks...)
-	if err == nil {
-		srcSpace := align4K(0)
-		if srcType == TypeFile {
-			srcSpace = align4K(srcLength)
-		}
 
-		if exchange {
-			if dino > 0 && parentSrc != parentDst {
-				dstSpace := align4K(0)
-				if dtyp == TypeFile {
-					dstSpace = align4K(tattr.Length)
-				}
-				if parentSrc.IsTrash() {
-					deltaSpace, deltaInodes := -srcSpace, int64(-1)
-					if parentDst.IsTrash() {
-						deltaSpace += dstSpace
-						deltaInodes++
-					}
-					m.updateTrashStats(ctx, parentSrc, deltaSpace, deltaInodes)
-				}
-				if parentDst.IsTrash() {
-					deltaSpace, deltaInodes := -dstSpace, int64(-1)
-					if parentSrc.IsTrash() {
-						deltaSpace += srcSpace
-						deltaInodes++
-					}
-					m.updateTrashStats(ctx, parentDst, deltaSpace, deltaInodes)
-				}
-			}
-		} else {
-			if parentSrc.IsTrash() {
-				deltaSpace, deltaInodes := -srcSpace, int64(-1)
-				if parentDst.IsTrash() {
-					deltaSpace += srcSpace
-					deltaInodes++
-				}
-				m.updateTrashStats(ctx, parentSrc, deltaSpace, deltaInodes)
-			}
-			if !parentSrc.IsTrash() && parentDst.IsTrash() {
-				m.updateTrashStats(ctx, parentDst, srcSpace, 1)
-			}
-
-			if dino > 0 {
-				if trash > 0 {
-					m.updateTrashStats(ctx, trash, newSpace, newInode)
-				} else {
-					if parentDst.IsTrash() && (newSpace != 0 || newInode != 0) {
-						m.updateTrashStats(ctx, parentDst, newSpace, newInode)
-					}
-				}
-			}
-		}
+	if err == nil && !exchange && dino > 0 && trash > 0 && trashIno != nil {
+		*trashIno = trash
 	}
 
 	if err == nil && !exchange && trash == 0 {

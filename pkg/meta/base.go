@@ -116,12 +116,12 @@ type engine interface {
 	doLookup(ctx Context, parent Ino, name string, inode *Ino, attr *Attr) syscall.Errno
 	doMknod(ctx Context, parent Ino, name string, _type uint8, mode, cumask uint16, path string, inode *Ino, attr *Attr) syscall.Errno
 	doLink(ctx Context, inode, parent Ino, name string, attr *Attr) syscall.Errno
-	doUnlink(ctx Context, parent Ino, name string, attr *Attr, skipCheckTrash ...bool) syscall.Errno
-	doRmdir(ctx Context, parent Ino, name string, inode *Ino, attr *Attr, skipCheckTrash ...bool) syscall.Errno
-	doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta *dirStat, skipCheckTrash ...bool) syscall.Errno
+	doUnlink(ctx Context, parent Ino, name string, attr *Attr, trashIno *Ino, skipCheckTrash ...bool) syscall.Errno
+	doRmdir(ctx Context, parent Ino, name string, inode *Ino, attr *Attr, trashIno *Ino, skipCheckTrash ...bool) syscall.Errno
+	doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta *dirStat, trashIno *Ino, trashDelta *dirStat, skipCheckTrash ...bool) syscall.Errno
 	doReadlink(ctx Context, inode Ino, noatime bool) (int64, []byte, error)
 	doReaddir(ctx Context, inode Ino, plus uint8, entries *[]*Entry, limit int) syscall.Errno
-	doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tinode *Ino, attr, tattr *Attr) syscall.Errno
+	doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tinode *Ino, attr, tattr *Attr, trashIno *Ino) syscall.Errno
 	doSetXattr(ctx Context, inode Ino, name string, value []byte, flags uint32) syscall.Errno
 	doRemoveXattr(ctx Context, inode Ino, name string) syscall.Errno
 	doRepair(ctx Context, inode Ino, attr *Attr) syscall.Errno
@@ -1715,13 +1715,17 @@ func (m *baseMeta) Unlink(ctx Context, parent Ino, name string, skipCheckTrash .
 	defer m.timeit("Unlink", time.Now())
 	parent = m.checkRoot(parent)
 	var attr Attr
-	err := m.en.doUnlink(ctx, parent, name, &attr, skipCheckTrash...)
+	var trashIno Ino
+	err := m.en.doUnlink(ctx, parent, name, &attr, &trashIno, skipCheckTrash...)
 	if err == 0 {
 		var diffLength uint64
 		if attr.Typ == TypeFile {
 			diffLength = attr.Length
 		}
 		m.updateDirStat(ctx, parent, -int64(diffLength), -align4K(diffLength), -1)
+		if trashIno > 0 {
+			m.updateTrashStats(ctx, trashIno, int64(diffLength), align4K(diffLength), 1)
+		}
 		if !parent.IsTrash() {
 			m.updateDirQuota(ctx, parent, -align4K(diffLength), -1)
 		}
@@ -1747,7 +1751,8 @@ func (m *baseMeta) Rmdir(ctx Context, parent Ino, name string, skipCheckTrash ..
 	parent = m.checkRoot(parent)
 	var inode Ino
 	var oldAttr Attr
-	st := m.en.doRmdir(ctx, parent, name, &inode, &oldAttr, skipCheckTrash...)
+	var trashIno Ino
+	st := m.en.doRmdir(ctx, parent, name, &inode, &oldAttr, &trashIno, skipCheckTrash...)
 	if st == 0 {
 		if !parent.IsTrash() {
 			m.parentMu.Lock()
@@ -1755,6 +1760,9 @@ func (m *baseMeta) Rmdir(ctx Context, parent Ino, name string, skipCheckTrash ..
 			m.parentMu.Unlock()
 		}
 		m.updateDirStat(ctx, parent, 0, -align4K(0), -1)
+		if trashIno > 0 {
+			m.updateTrashStats(ctx, trashIno, 0, align4K(0), 1)
+		}
 		m.updateDirQuota(ctx, parent, -align4K(0), -1)
 	}
 	return st
@@ -1766,9 +1774,14 @@ func (m *baseMeta) BatchUnlink(ctx Context, parent Ino, entries []*Entry, count 
 		return 0
 	}
 	var delta dirStat
-	st := m.en.doBatchUnlink(ctx, parent, entries, &delta, skipCheckTrash)
+	var trashIno Ino
+	var trashDelta dirStat
+	st := m.en.doBatchUnlink(ctx, parent, entries, &delta, &trashIno, &trashDelta, skipCheckTrash)
 	if st == 0 {
 		m.updateDirStat(ctx, parent, delta.length, delta.space, delta.inodes)
+		if trashIno > 0 {
+			m.updateTrashStats(ctx, trashIno, trashDelta.length, trashDelta.space, trashDelta.inodes)
+		}
 		if !parent.IsTrash() {
 			m.updateDirQuota(ctx, parent, delta.space, delta.inodes)
 		}
@@ -1869,7 +1882,8 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 	}
 	tinode := new(Ino)
 	tattr := new(Attr)
-	st := m.en.doRename(ctx, parentSrc, nameSrc, parentDst, nameDst, flags, inode, tinode, attr, tattr)
+	var trashIno Ino
+	st := m.en.doRename(ctx, parentSrc, nameSrc, parentDst, nameDst, flags, inode, tinode, attr, tattr, &trashIno)
 	if st == 0 {
 		var diffLength uint64
 		if attr.Typ == TypeDirectory {
@@ -1905,8 +1919,94 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 				m.updateDirQuota(ctx, parentDst, -align4K(diffLength), -1)
 			}
 		}
+		m.updateRenameTrashStats(ctx, parentSrc, parentDst, flags, attr, tinode, tattr, trashIno)
 	}
 	return st
+}
+
+func renameStatDelta(typ uint8, length uint64) dirStat {
+	st := dirStat{space: align4K(0), inodes: 1}
+	if typ == TypeFile {
+		st.length = int64(length)
+		st.space = align4K(length)
+	}
+	return st
+}
+
+func renameDirectDeleteDelta(attr *Attr) dirStat {
+	if attr == nil {
+		return dirStat{}
+	}
+	if attr.Typ == TypeFile {
+		if attr.Nlink > 0 {
+			return dirStat{}
+		}
+		return dirStat{length: -int64(attr.Length), space: -align4K(attr.Length), inodes: -1}
+	}
+	return dirStat{space: -align4K(0), inodes: -1}
+}
+
+func (m *baseMeta) applyTrashDelta(ctx Context, ino Ino, d dirStat) {
+	if ino <= 0 || (d.length == 0 && d.space == 0 && d.inodes == 0) {
+		return
+	}
+	m.updateTrashStats(ctx, ino, d.length, d.space, d.inodes)
+}
+
+func (m *baseMeta) updateRenameTrashStats(ctx Context, parentSrc, parentDst Ino, flags uint32, attr *Attr, tinode *Ino, tattr *Attr, trashIno Ino) {
+	srcDelta := renameStatDelta(attr.Typ, attr.Length)
+	hasTarget := tinode != nil && *tinode > 0
+	exchange := flags == RenameExchange
+
+	if exchange {
+		if !hasTarget || parentSrc == parentDst {
+			return
+		}
+		dstDelta := renameStatDelta(tattr.Typ, tattr.Length)
+		if parentSrc.IsTrash() {
+			m.applyTrashDelta(ctx, parentSrc, dirStat{
+				length: dstDelta.length - srcDelta.length,
+				space:  dstDelta.space - srcDelta.space,
+				inodes: dstDelta.inodes - srcDelta.inodes,
+			})
+		}
+		if parentDst.IsTrash() {
+			m.applyTrashDelta(ctx, parentDst, dirStat{
+				length: srcDelta.length - dstDelta.length,
+				space:  srcDelta.space - dstDelta.space,
+				inodes: srcDelta.inodes - dstDelta.inodes,
+			})
+		}
+		return
+	}
+
+	if parentSrc.IsTrash() {
+		delta := dirStat{length: -srcDelta.length, space: -srcDelta.space, inodes: -srcDelta.inodes}
+		if parentDst.IsTrash() {
+			delta.length += srcDelta.length
+			delta.space += srcDelta.space
+			delta.inodes += srcDelta.inodes
+		}
+		m.applyTrashDelta(ctx, parentSrc, delta)
+	}
+
+	if !parentSrc.IsTrash() && parentDst.IsTrash() {
+		m.applyTrashDelta(ctx, parentDst, srcDelta)
+	}
+
+	if !hasTarget {
+		return
+	}
+
+	dstDelta := renameStatDelta(tattr.Typ, tattr.Length)
+	if trashIno > 0 {
+		m.applyTrashDelta(ctx, trashIno, dstDelta)
+		return
+	}
+
+	if parentDst.IsTrash() {
+		m.applyTrashDelta(ctx, parentDst, renameDirectDeleteDelta(tattr))
+	}
 }
 
 // caller makes sure inode is not special inode.
@@ -3074,7 +3174,7 @@ func (m *baseMeta) CleanupTrashBefore(ctx Context, edge time.Time, increProgress
 			}
 		} else {
 			entries = entries[1:]
-			if st = m.en.doRmdir(ctx, TrashInode, string(e.Name), nil, nil); st != 0 {
+			if st = m.en.doRmdir(ctx, TrashInode, string(e.Name), nil, nil, nil); st != 0 {
 				logger.Warnf("rmdir subTrash %s: %s", e.Name, st)
 			}
 		}
