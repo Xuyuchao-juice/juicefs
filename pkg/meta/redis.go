@@ -1713,6 +1713,12 @@ func (m *redisMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, s
 		}
 		m.updateStats(newSpace, newInode)
 		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, newInode)
+	} else if err == nil && trash > 0 && attr.Nlink > 0 {
+		trashSpace := align4K(0)
+		if _type == TypeFile {
+			trashSpace = align4K(attr.Length)
+		}
+		m.updateTrashStats(ctx, trash, trashSpace, 1)
 	}
 	return errno(err)
 }
@@ -1753,6 +1759,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, del
 
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
+		var batchTrashSpace, batchTrashInodes int64
 		var batchFsSpace, batchFsInodes int64
 		var deltas ugQuotaDeltas
 		var delNodes map[Ino]*dNode
@@ -1760,6 +1767,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, del
 
 		err := m.txn(ctx, func(tx *redis.Tx) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
+			batchTrashSpace, batchTrashInodes = 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
 			deltas = make(ugQuotaDeltas)
 			delNodes = make(map[Ino]*dNode)
@@ -2003,6 +2011,12 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, del
 					if info.trashName == "" {
 						info.trashName = m.trashEntry(parent, info.inode, info.name)
 					}
+					if info.typ == TypeFile {
+						batchTrashSpace += align4K(info.attr.Length)
+					} else {
+						batchTrashSpace += align4K(0)
+					}
+					batchTrashInodes++
 					key := m.entryKey(info.trash)
 					if trashOps[key] == nil {
 						trashOps[key] = make(map[string]interface{})
@@ -2073,6 +2087,9 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, del
 		delta.length += batchDirLength
 		delta.space += batchDirSpace
 		delta.inodes += batchDirInodes
+		if batchTrashSpace != 0 || batchTrashInodes != 0 {
+			m.updateTrashStats(ctx, trash, batchTrashSpace, batchTrashInodes)
+		}
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
@@ -2194,6 +2211,8 @@ func (m *redisMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, o
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
 		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, -align4K(0), -1)
+	} else if err == nil && trash > 0 {
+		m.updateTrashStats(ctx, trash, align4K(0), 1)
 	}
 	return errno(err)
 }
@@ -2204,6 +2223,8 @@ func (m *redisMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentD
 	var trash, dino Ino
 	var dtyp uint8
 	var tattr Attr
+	var srcType uint8
+	var srcLength uint64
 	var newSpace, newInode int64
 	keys := []string{m.inodeKey(parentSrc), m.entryKey(parentSrc), m.inodeKey(parentDst), m.entryKey(parentDst)}
 	if parentSrc.IsTrash() {
@@ -2317,6 +2338,8 @@ func (m *redisMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentD
 			return syscall.EPERM
 		}
 		m.parseAttr([]byte(rs[2].(string)), &iattr)
+		srcType = iattr.Typ
+		srcLength = iattr.Length
 		if (sattr.Flags&FlagAppend) != 0 || (sattr.Flags&FlagImmutable) != 0 || (dattr.Flags&FlagImmutable) != 0 || (iattr.Flags&FlagAppend) != 0 || (iattr.Flags&FlagImmutable) != 0 {
 			return syscall.EPERM
 		}
@@ -2503,6 +2526,60 @@ func (m *redisMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentD
 		})
 		return err
 	}, keys...)
+	if err == nil {
+		srcSpace := align4K(0)
+		if srcType == TypeFile {
+			srcSpace = align4K(srcLength)
+		}
+
+		if exchange {
+			if dino > 0 && parentSrc != parentDst {
+				dstSpace := align4K(0)
+				if dtyp == TypeFile {
+					dstSpace = align4K(tattr.Length)
+				}
+				if parentSrc.IsTrash() {
+					deltaSpace, deltaInodes := -srcSpace, int64(-1)
+					if parentDst.IsTrash() {
+						deltaSpace += dstSpace
+						deltaInodes++
+					}
+					m.updateTrashStats(ctx, parentSrc, deltaSpace, deltaInodes)
+				}
+				if parentDst.IsTrash() {
+					deltaSpace, deltaInodes := -dstSpace, int64(-1)
+					if parentSrc.IsTrash() {
+						deltaSpace += srcSpace
+						deltaInodes++
+					}
+					m.updateTrashStats(ctx, parentDst, deltaSpace, deltaInodes)
+				}
+			}
+		} else {
+			if parentSrc.IsTrash() {
+				deltaSpace, deltaInodes := -srcSpace, int64(-1)
+				if parentDst.IsTrash() {
+					deltaSpace += srcSpace
+					deltaInodes++
+				}
+				m.updateTrashStats(ctx, parentSrc, deltaSpace, deltaInodes)
+			}
+			if !parentSrc.IsTrash() && parentDst.IsTrash() {
+				m.updateTrashStats(ctx, parentDst, srcSpace, 1)
+			}
+
+			if dino > 0 {
+				if trash > 0 {
+					m.updateTrashStats(ctx, trash, newSpace, newInode)
+				} else {
+					if parentDst.IsTrash() && (newSpace != 0 || newInode != 0) {
+						m.updateTrashStats(ctx, parentDst, newSpace, newInode)
+					}
+				}
+			}
+		}
+	}
+
 	if err == nil && !exchange && trash == 0 {
 		if dino > 0 && dtyp == TypeFile && tattr.Nlink == 0 {
 			m.fileDeleted(opened, false, dino, tattr.Length)
