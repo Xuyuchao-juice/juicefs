@@ -1907,36 +1907,25 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 				}
 			}
 		}
-		if *tinode > 0 && flags != RenameExchange {
-			diffLength = 0
+		if tinode != nil && *tinode > 0 {
 			if tattr.Typ == TypeDirectory {
 				m.parentMu.Lock()
 				delete(m.dirParents, *tinode)
 				m.parentMu.Unlock()
-			} else if attr.Typ == TypeFile {
-				diffLength = tattr.Length
+				diffLength = 0
+			} else if tattr.Typ == TypeFile {
+				diffLength = uint64(tattr.Length)
+			}
+			if trashIno > 0 {
+				m.updateDirStat(ctx, trashIno, int64(diffLength), align4K(diffLength), 1)
 			}
 			m.updateDirStat(ctx, parentDst, -int64(diffLength), -align4K(diffLength), -1)
 			if quotaDst > 0 {
 				m.updateDirQuota(ctx, parentDst, -align4K(diffLength), -1)
 			}
 		}
-		m.updateRenameTrashStats(ctx, parentSrc, parentDst, flags, attr, tinode, tattr, trashIno)
 	}
 	return st
-}
-
-func (m *baseMeta) updateRenameTrashStats(ctx Context, parentSrc, parentDst Ino, flags uint32, attr *Attr, tinode *Ino, tattr *Attr, trashIno Ino) {
-	if trashIno <= 0 || tinode == nil || *tinode <= 0 {
-		return
-	}
-	var length int64
-	var space int64 = align4K(0)
-	if tattr.Typ == TypeFile {
-		length = int64(tattr.Length)
-		space = align4K(tattr.Length)
-	}
-	m.updateDirStat(ctx, trashIno, length, space, 1)
 }
 
 // caller makes sure inode is not special inode.
