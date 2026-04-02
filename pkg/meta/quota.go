@@ -184,10 +184,6 @@ func (m *baseMeta) updateDirStat(ctx Context, ino Ino, length, space, inodes int
 	m.dirStats[ino] = stat
 }
 
-func (m *baseMeta) updateTrashStats(ctx Context, trash Ino, length, space, inodes int64) {
-	m.updateDirStat(ctx, trash, length, space, inodes)
-}
-
 func (m *baseMeta) updateParentStat(ctx Context, inode, parent Ino, length, space int64) {
 	if length == 0 && space == 0 {
 		return

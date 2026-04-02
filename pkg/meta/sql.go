@@ -2452,8 +2452,12 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		return err
 	}, parentLocks...)
-	if err == nil && !exchange && dino > 0 && trash > 0 && trashIno != nil {
-		*trashIno = trash
+	if err == nil && dino > 0 && trashIno != nil {
+		if !exchange && trash > 0 {
+			*trashIno = trash
+		} else if exchange && parentSrc.IsTrash() {
+			*trashIno = parentSrc
+		}
 	}
 
 	if err == nil && !exchange && trash == 0 {
@@ -2627,12 +2631,12 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		entries = entries[batchSize:]
 		var batchFsSpace, batchFsInodes int64
 		var batchDirLength, batchDirSpace, batchDirInodes int64
-		var skipTrashSpace, skipTrashLength, skipTrashInodes int64
+		var batchTrashLength, batchTrashSpace, batchTrashInodes int64
 		var deltas ugQuotaDeltas
 		err := m.txn(func(s *xorm.Session) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
-			skipTrashSpace, skipTrashLength, skipTrashInodes = 0, 0, 0
+			batchTrashLength, batchTrashSpace, batchTrashInodes = 0, 0, 0
 			deltas = make(ugQuotaDeltas)
 			pn := node{Inode: parent}
 			ok, err := s.Get(&pn)
@@ -2845,15 +2849,13 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 						Name:   []byte(info.trashName),
 						Inode:  info.n.Inode,
 						Type:   info.n.Type})
-				} else if info.n.Nlink > 0 && info.trash == 0 {
-					// 不进回收站（因为FlagSkipTrash或硬链接冲突）
 					if info.n.Type == TypeFile {
-						skipTrashSpace += align4K(info.n.Length)
-						skipTrashLength += int64(info.n.Length)
+						batchTrashLength += int64(info.n.Length)
+						batchTrashSpace += align4K(info.n.Length)
 					} else {
-						skipTrashSpace += align4K(0)
+						batchTrashSpace += align4K(0)
 					}
-					skipTrashInodes++
+					batchTrashInodes++
 				}
 				visited[info.n.Inode] = true
 			}
@@ -2932,13 +2934,9 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		delta.length += batchDirLength
 		delta.space += batchDirSpace
 		delta.inodes += batchDirInodes
-		// realTrash* = |batchDir*| - skipTrash*
-		realTrashLength := -batchDirLength - skipTrashLength
-		realTrashSpace := -batchDirSpace - skipTrashSpace
-		realTrashInodes := -batchDirInodes - skipTrashInodes
-		totalTrashLength += realTrashLength
-		totalTrashSpace += realTrashSpace
-		totalTrashInodes += realTrashInodes
+		totalTrashLength += batchTrashLength
+		totalTrashSpace += batchTrashSpace
+		totalTrashInodes += batchTrashInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)

@@ -1724,7 +1724,7 @@ func (m *baseMeta) Unlink(ctx Context, parent Ino, name string, skipCheckTrash .
 		}
 		m.updateDirStat(ctx, parent, -int64(diffLength), -align4K(diffLength), -1)
 		if trashIno > 0 {
-			m.updateTrashStats(ctx, trashIno, int64(diffLength), align4K(diffLength), 1)
+			m.updateDirStat(ctx, trashIno, int64(diffLength), align4K(diffLength), 1)
 		}
 		if !parent.IsTrash() {
 			m.updateDirQuota(ctx, parent, -align4K(diffLength), -1)
@@ -1761,9 +1761,11 @@ func (m *baseMeta) Rmdir(ctx Context, parent Ino, name string, skipCheckTrash ..
 		}
 		m.updateDirStat(ctx, parent, 0, -align4K(0), -1)
 		if trashIno > 0 {
-			m.updateTrashStats(ctx, trashIno, 0, align4K(0), 1)
+			m.updateDirStat(ctx, trashIno, 0, align4K(0), 1)
 		}
-		m.updateDirQuota(ctx, parent, -align4K(0), -1)
+		if !parent.IsTrash() {
+			m.updateDirQuota(ctx, parent, -align4K(0), -1)
+		}
 	}
 	return st
 }
@@ -1780,7 +1782,7 @@ func (m *baseMeta) BatchUnlink(ctx Context, parent Ino, entries []*Entry, count 
 	if st == 0 {
 		m.updateDirStat(ctx, parent, delta.length, delta.space, delta.inodes)
 		if trashIno > 0 {
-			m.updateTrashStats(ctx, trashIno, trashDelta.length, trashDelta.space, trashDelta.inodes)
+			m.updateDirStat(ctx, trashIno, trashDelta.length, trashDelta.space, trashDelta.inodes)
 		}
 		if !parent.IsTrash() {
 			m.updateDirQuota(ctx, parent, delta.space, delta.inodes)
@@ -1924,89 +1926,17 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 	return st
 }
 
-func renameStatDelta(typ uint8, length uint64) dirStat {
-	st := dirStat{space: align4K(0), inodes: 1}
-	if typ == TypeFile {
-		st.length = int64(length)
-		st.space = align4K(length)
-	}
-	return st
-}
-
-func renameDirectDeleteDelta(attr *Attr) dirStat {
-	if attr == nil {
-		return dirStat{}
-	}
-	if attr.Typ == TypeFile {
-		if attr.Nlink > 0 {
-			return dirStat{}
-		}
-		return dirStat{length: -int64(attr.Length), space: -align4K(attr.Length), inodes: -1}
-	}
-	return dirStat{space: -align4K(0), inodes: -1}
-}
-
-func (m *baseMeta) applyTrashDelta(ctx Context, ino Ino, d dirStat) {
-	if ino <= 0 || (d.length == 0 && d.space == 0 && d.inodes == 0) {
-		return
-	}
-	m.updateTrashStats(ctx, ino, d.length, d.space, d.inodes)
-}
-
 func (m *baseMeta) updateRenameTrashStats(ctx Context, parentSrc, parentDst Ino, flags uint32, attr *Attr, tinode *Ino, tattr *Attr, trashIno Ino) {
-	srcDelta := renameStatDelta(attr.Typ, attr.Length)
-	hasTarget := tinode != nil && *tinode > 0
-	exchange := flags == RenameExchange
-
-	if exchange {
-		if !hasTarget || parentSrc == parentDst {
-			return
-		}
-		dstDelta := renameStatDelta(tattr.Typ, tattr.Length)
-		if parentSrc.IsTrash() {
-			m.applyTrashDelta(ctx, parentSrc, dirStat{
-				length: dstDelta.length - srcDelta.length,
-				space:  dstDelta.space - srcDelta.space,
-				inodes: dstDelta.inodes - srcDelta.inodes,
-			})
-		}
-		if parentDst.IsTrash() {
-			m.applyTrashDelta(ctx, parentDst, dirStat{
-				length: srcDelta.length - dstDelta.length,
-				space:  srcDelta.space - dstDelta.space,
-				inodes: srcDelta.inodes - dstDelta.inodes,
-			})
-		}
+	if trashIno <= 0 || tinode == nil || *tinode <= 0 {
 		return
 	}
-
-	if parentSrc.IsTrash() {
-		delta := dirStat{length: -srcDelta.length, space: -srcDelta.space, inodes: -srcDelta.inodes}
-		if parentDst.IsTrash() {
-			delta.length += srcDelta.length
-			delta.space += srcDelta.space
-			delta.inodes += srcDelta.inodes
-		}
-		m.applyTrashDelta(ctx, parentSrc, delta)
+	var length int64
+	var space int64 = align4K(0)
+	if tattr.Typ == TypeFile {
+		length = int64(tattr.Length)
+		space = align4K(tattr.Length)
 	}
-
-	if !parentSrc.IsTrash() && parentDst.IsTrash() {
-		m.applyTrashDelta(ctx, parentDst, srcDelta)
-	}
-
-	if !hasTarget {
-		return
-	}
-
-	dstDelta := renameStatDelta(tattr.Typ, tattr.Length)
-	if trashIno > 0 {
-		m.applyTrashDelta(ctx, trashIno, dstDelta)
-		return
-	}
-
-	if parentDst.IsTrash() {
-		m.applyTrashDelta(ctx, parentDst, renameDirectDeleteDelta(tattr))
-	}
+	m.updateDirStat(ctx, trashIno, length, space, 1)
 }
 
 // caller makes sure inode is not special inode.

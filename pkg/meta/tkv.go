@@ -1477,14 +1477,14 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
-		var skipTrashSpace, skipTrashLength, skipTrashInodes int64
+		var batchTrashLength, batchTrashSpace, batchTrashInodes int64
 		var batchFsSpace, batchFsInodes int64
 		var deltas ugQuotaDeltas
 		var delNodes map[Ino]*dNode
 
 		err := m.txn(ctx, func(tx *kvTxn) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
-			skipTrashSpace, skipTrashLength, skipTrashInodes = 0, 0, 0
+			batchTrashLength, batchTrashSpace, batchTrashInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
 			deltas = make(ugQuotaDeltas)
 			delNodes = make(map[Ino]*dNode)
@@ -1689,15 +1689,13 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 					if info.attr.Parent == 0 {
 						tx.incrBy(m.parentKey(info.inode, info.trash), 1)
 					}
-				} else if info.trash == 0 && info.attr.Nlink > 0 {
-					// 不进回收站（因为FlagSkipTrash或硬链接冲突）
 					if info.typ == TypeFile {
-						skipTrashSpace += align4K(info.attr.Length)
-						skipTrashLength += int64(info.attr.Length)
+						batchTrashLength += int64(info.attr.Length)
+						batchTrashSpace += align4K(info.attr.Length)
 					} else {
-						skipTrashSpace += align4K(0)
+						batchTrashSpace += align4K(0)
 					}
-					skipTrashInodes++
+					batchTrashInodes++
 				}
 				if info.attr.Parent == 0 && info.attr.Nlink > 0 {
 					tx.incrBy(m.parentKey(info.inode, parent), -1)
@@ -1724,13 +1722,9 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		delta.length += batchDirLength
 		delta.space += batchDirSpace
 		delta.inodes += batchDirInodes
-		// realTrash* = |batchDir*| - skipTrash*
-		realTrashLength := -batchDirLength - skipTrashLength
-		realTrashSpace := -batchDirSpace - skipTrashSpace
-		realTrashInodes := -batchDirInodes - skipTrashInodes
-		totalTrashLength += realTrashLength
-		totalTrashSpace += realTrashSpace
-		totalTrashInodes += realTrashInodes
+		totalTrashLength += batchTrashLength
+		totalTrashSpace += batchTrashSpace
+		totalTrashInodes += batchTrashInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
@@ -2120,8 +2114,12 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		return nil
 	}, parentLocks...)
 
-	if err == nil && !exchange && dino > 0 && trash > 0 && trashIno != nil {
-		*trashIno = trash
+	if err == nil && dino > 0 && trashIno != nil {
+		if !exchange && trash > 0 {
+			*trashIno = trash
+		} else if exchange && parentSrc.IsTrash() {
+			*trashIno = parentSrc
+		}
 	}
 
 	if err == nil && !exchange && trash == 0 {
