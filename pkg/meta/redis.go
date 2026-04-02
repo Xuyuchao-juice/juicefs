@@ -1765,7 +1765,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, del
 
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
-		var batchTrashSpace, batchTrashLength, batchTrashInodes int64
+		var skipTrashSpace, skipTrashLength, skipTrashInodes int64
 		var batchFsSpace, batchFsInodes int64
 		var deltas ugQuotaDeltas
 		var delNodes map[Ino]*dNode
@@ -1773,7 +1773,7 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, del
 
 		err := m.txn(ctx, func(tx *redis.Tx) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
-			batchTrashSpace, batchTrashLength, batchTrashInodes = 0, 0, 0
+			skipTrashSpace, skipTrashLength, skipTrashInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
 			deltas = make(ugQuotaDeltas)
 			delNodes = make(map[Ino]*dNode)
@@ -2017,16 +2017,6 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, del
 					if info.trashName == "" {
 						info.trashName = m.trashEntry(parent, info.inode, info.name)
 					}
-					var trashLength int64
-					if info.typ == TypeFile {
-						batchTrashSpace += align4K(info.attr.Length)
-						trashLength = int64(info.attr.Length)
-					} else {
-						batchTrashSpace += align4K(0)
-						trashLength = 0
-					}
-					batchTrashLength += trashLength
-					batchTrashInodes++
 					key := m.entryKey(info.trash)
 					if trashOps[key] == nil {
 						trashOps[key] = make(map[string]interface{})
@@ -2039,6 +2029,15 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, del
 						}
 						parentOps[key][info.trash.String()]++
 					}
+				} else if info.attr.Nlink > 0 && info.trash == 0 {
+					// 不进回收站（因为FlagSkipTrash或硬链接冲突）
+					if info.typ == TypeFile {
+						skipTrashSpace += align4K(info.attr.Length)
+						skipTrashLength += int64(info.attr.Length)
+					} else {
+						skipTrashSpace += align4K(0)
+					}
+					skipTrashInodes++
 				}
 				visited[info.inode] = true
 			}
@@ -2097,9 +2096,13 @@ func (m *redisMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, del
 		delta.length += batchDirLength
 		delta.space += batchDirSpace
 		delta.inodes += batchDirInodes
-		totalTrashLength += batchTrashLength
-		totalTrashSpace += batchTrashSpace
-		totalTrashInodes += batchTrashInodes
+		// realTrash* = |batchDir*| - skipTrash*
+		realTrashLength := -batchDirLength - skipTrashLength
+		realTrashSpace := -batchDirSpace - skipTrashSpace
+		realTrashInodes := -batchDirInodes - skipTrashInodes
+		totalTrashLength += realTrashLength
+		totalTrashSpace += realTrashSpace
+		totalTrashInodes += realTrashInodes
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
