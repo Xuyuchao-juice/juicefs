@@ -1755,9 +1755,7 @@ func (m *baseMeta) Rmdir(ctx Context, parent Ino, name string, skipCheckTrash ..
 			m.parentMu.Unlock()
 		}
 		m.updateDirStat(ctx, parent, 0, -align4K(0), -1)
-		if !parent.IsTrash() {
-			m.updateDirQuota(ctx, parent, -align4K(0), -1)
-		}
+		m.updateDirQuota(ctx, parent, -align4K(0), -1)
 	}
 	return st
 }
@@ -1894,16 +1892,19 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			}
 		}
 		if tinode != nil && *tinode > 0 {
+			diffLength = 0
 			if tattr.Typ == TypeDirectory {
 				m.parentMu.Lock()
 				delete(m.dirParents, *tinode)
 				m.parentMu.Unlock()
-				diffLength = 0
 			} else if tattr.Typ == TypeFile {
 				diffLength = uint64(tattr.Length)
 			}
 			if flags == RenameExchange && parentSrc != parentDst {
 				m.updateDirStat(ctx, parentSrc, int64(diffLength), align4K(diffLength), 1)
+				if quotaSrc > 0 {
+					m.updateDirQuota(ctx, parentSrc, align4K(diffLength), 1)
+				}
 			}
 			m.updateDirStat(ctx, parentDst, -int64(diffLength), -align4K(diffLength), -1)
 			if quotaDst > 0 {

@@ -1419,7 +1419,7 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 		}
 		m.updateStats(newSpace, newInode)
 		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, newInode)
-	} else if err == nil && trash > 0 && attr.Nlink > 0 {
+	} else if err == nil && trash > 0 {
 		trashLength := int64(0)
 		trashSpace := align4K(0)
 		if _type == TypeFile {
@@ -2096,22 +2096,22 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		return nil
 	}, parentLocks...)
 
-	if err == nil && dino > 0 && !exchange && trash > 0 {
-		dstLength := int64(0)
-		dstSpace := align4K(0)
-		if dtyp == TypeFile {
-			dstLength = int64(tattr.Length)
-			dstSpace = align4K(tattr.Length)
+	if err == nil && !exchange && dino > 0 {
+		if trash > 0 {
+			dstLength := int64(0)
+			dstSpace := align4K(0)
+			if dtyp == TypeFile {
+				dstLength = int64(tattr.Length)
+				dstSpace = align4K(tattr.Length)
+			}
+			m.updateDirStat(ctx, trash, dstLength, dstSpace, 1)
+		} else if trash == 0 {
+			if dtyp == TypeFile && tattr.Nlink == 0 {
+				m.fileDeleted(opened, false, dino, tattr.Length)
+			}
+			m.updateStats(newSpace, newInode)
+			m.updateUserGroupStat(ctx, tattr.Uid, tattr.Gid, newSpace, newInode)
 		}
-		m.updateDirStat(ctx, trash, dstLength, dstSpace, 1)
-	}
-
-	if err == nil && !exchange && trash == 0 {
-		if dino > 0 && dtyp == TypeFile && tattr.Nlink == 0 {
-			m.fileDeleted(opened, false, dino, tattr.Length)
-		}
-		m.updateStats(newSpace, newInode)
-		m.updateUserGroupStat(ctx, tattr.Uid, tattr.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }

@@ -1935,7 +1935,7 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 	if err == nil && attr != nil {
 		m.parseAttr(&n, attr)
 	}
-	if err == nil && trash > 0 && n.Nlink > 0 {
+	if err == nil && trash > 0 {
 		trashLength := int64(0)
 		trashSpace := align4K(0)
 		if n.Type == TypeFile {
@@ -2449,22 +2449,22 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		return err
 	}, parentLocks...)
-	if err == nil && dino > 0 && !exchange && trash > 0 {
-		dstLength := int64(0)
-		dstSpace := align4K(0)
-		if dn.Type == TypeFile {
-			dstLength = int64(dn.Length)
-			dstSpace = align4K(dn.Length)
+	if err == nil && !exchange && dino > 0 {
+		if trash > 0 {
+			dstLength := int64(0)
+			dstSpace := align4K(0)
+			if dn.Type == TypeFile {
+				dstLength = int64(dn.Length)
+				dstSpace = align4K(dn.Length)
+			}
+			m.updateDirStat(ctx, trash, dstLength, dstSpace, 1)
+		} else if trash == 0 {
+			if dn.Type == TypeFile && dn.Nlink == 0 {
+				m.fileDeleted(opened, false, dino, dn.Length)
+			}
+			m.updateStats(newSpace, newInode)
+			m.updateUserGroupStat(ctx, dn.Uid, dn.Gid, newSpace, newInode)
 		}
-		m.updateDirStat(ctx, trash, dstLength, dstSpace, 1)
-	}
-
-	if err == nil && !exchange && trash == 0 {
-		if dino > 0 && dn.Type == TypeFile && dn.Nlink == 0 {
-			m.fileDeleted(opened, false, dino, dn.Length)
-		}
-		m.updateStats(newSpace, newInode)
-		m.updateUserGroupStat(ctx, dn.Uid, dn.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }
