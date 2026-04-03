@@ -1280,10 +1280,7 @@ func (m *kvMeta) doMknod(ctx Context, parent Ino, name string, _type uint8, mode
 	}, parent))
 }
 
-func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, trashIno *Ino, skipCheckTrash ...bool) syscall.Errno {
-	if trashIno != nil {
-		*trashIno = 0
-	}
+func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skipCheckTrash ...bool) syscall.Errno {
 	var trash Ino
 	if !(len(skipCheckTrash) == 1 && skipCheckTrash[0]) {
 		if st := m.checkTrash(parent, &trash); st != 0 {
@@ -1422,29 +1419,22 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, tras
 		}
 		m.updateStats(newSpace, newInode)
 		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, newInode)
-	} else if err == nil && trash > 0 && attr.Nlink > 0 && trashIno != nil {
-		*trashIno = trash
+	} else if err == nil && trash > 0 && attr.Nlink > 0 {
+		trashLength := int64(0)
+		trashSpace := align4K(0)
+		if _type == TypeFile {
+			trashLength = int64(attr.Length)
+			trashSpace = align4K(attr.Length)
+		}
+		m.updateDirStat(ctx, trash, trashLength, trashSpace, 1)
 	}
 	return errno(err)
 }
 
-func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta *dirStat, trashIno *Ino, trashDelta *dirStat, skipCheckTrash ...bool) syscall.Errno {
+func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta *dirStat, skipCheckTrash ...bool) syscall.Errno {
 	if len(entries) == 0 {
 		return 0
 	}
-	if trashIno != nil {
-		*trashIno = 0
-	}
-	if trashDelta != nil {
-		*trashDelta = dirStat{}
-	}
-	var trash Ino
-	if len(skipCheckTrash) == 0 || !skipCheckTrash[0] {
-		if st := m.checkTrash(parent, &trash); st != 0 {
-			return st
-		}
-	}
-
 	// Each entry averages ~6 tx operations, so batch size should be 10000/6
 	maxOps := 10000
 	if m.Name() == "etcd" {
@@ -1465,8 +1455,6 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		opened bool
 		length uint64
 	}
-	var totalTrashLength, totalTrashSpace, totalTrashInodes int64
-
 	for len(entries) > 0 {
 		batchSize := batchNum
 		if batchSize > len(entries) {
@@ -1474,6 +1462,12 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		}
 		batch := entries[:batchSize]
 		entries = entries[batchSize:]
+		var trash Ino
+		if len(skipCheckTrash) == 0 || !skipCheckTrash[0] {
+			if st := m.checkTrash(parent, &trash); st != 0 {
+				return st
+			}
+		}
 
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
@@ -1722,27 +1716,18 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		delta.length += batchDirLength
 		delta.space += batchDirSpace
 		delta.inodes += batchDirInodes
-		totalTrashLength += batchTrashLength
-		totalTrashSpace += batchTrashSpace
-		totalTrashInodes += batchTrashInodes
+		if trash > 0 && (batchTrashSpace != 0 || batchTrashInodes != 0) {
+			m.updateDirStat(ctx, trash, batchTrashLength, batchTrashSpace, batchTrashInodes)
+		}
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
 		}
 	}
-	if trashIno != nil && trashDelta != nil && trash > 0 && (totalTrashSpace != 0 || totalTrashInodes != 0) {
-		*trashIno = trash
-		trashDelta.length = totalTrashLength
-		trashDelta.space = totalTrashSpace
-		trashDelta.inodes = totalTrashInodes
-	}
 	return 0
 }
 
-func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldAttr *Attr, trashIno *Ino, skipCheckTrash ...bool) syscall.Errno {
-	if trashIno != nil {
-		*trashIno = 0
-	}
+func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldAttr *Attr, skipCheckTrash ...bool) syscall.Errno {
 	var trash Ino
 	var attr Attr
 	if !(len(skipCheckTrash) == 1 && skipCheckTrash[0]) {
@@ -1841,16 +1826,13 @@ func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldA
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
 		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, -align4K(0), -1)
-	} else if err == nil && trash > 0 && trashIno != nil {
-		*trashIno = trash
+	} else if err == nil && trash > 0 {
+		m.updateDirStat(ctx, trash, 0, align4K(0), 1)
 	}
 	return errno(err)
 }
 
-func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tInode *Ino, attr, tAttr *Attr, trashIno *Ino) syscall.Errno {
-	if trashIno != nil {
-		*trashIno = 0
-	}
+func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, flags uint32, inode, tInode *Ino, attr, tAttr *Attr) syscall.Errno {
 	var trash Ino
 	if st := m.checkTrash(parentDst, &trash); st != 0 {
 		return st
@@ -2114,12 +2096,14 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		return nil
 	}, parentLocks...)
 
-	if err == nil && dino > 0 && trashIno != nil {
-		if !exchange && trash > 0 {
-			*trashIno = trash
-		} else if exchange && parentSrc.IsTrash() {
-			*trashIno = parentSrc
+	if err == nil && dino > 0 && !exchange && trash > 0 {
+		dstLength := int64(0)
+		dstSpace := align4K(0)
+		if dtyp == TypeFile {
+			dstLength = int64(tattr.Length)
+			dstSpace = align4K(tattr.Length)
 		}
+		m.updateDirStat(ctx, trash, dstLength, dstSpace, 1)
 	}
 
 	if err == nil && !exchange && trash == 0 {
