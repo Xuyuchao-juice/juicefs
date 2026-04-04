@@ -1935,6 +1935,15 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 	if err == nil && attr != nil {
 		m.parseAttr(&n, attr)
 	}
+	if err == nil && trash > 0 {
+		trashLength := int64(0)
+		trashSpace := align4K(0)
+		if n.Type == TypeFile {
+			trashLength = int64(n.Length)
+			trashSpace = align4K(n.Length)
+		}
+		m.updateDirStat(ctx, trash, trashLength, trashSpace, 1)
+	}
 	return errno(err)
 }
 
@@ -2057,6 +2066,8 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, attr
 	if err == nil && trash == 0 {
 		m.updateStats(-align4K(0), -1)
 		m.updateUserGroupStat(ctx, n.Uid, n.Gid, -align4K(0), -1)
+	} else if err == nil && trash > 0 {
+		m.updateDirStat(ctx, trash, 0, align4K(0), 1)
 	}
 	return errno(err)
 }
@@ -2438,12 +2449,22 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		return err
 	}, parentLocks...)
-	if err == nil && !exchange && trash == 0 {
-		if dino > 0 && dn.Type == TypeFile && dn.Nlink == 0 {
-			m.fileDeleted(opened, false, dino, dn.Length)
+	if err == nil && !exchange && dino > 0 {
+		if trash > 0 {
+			dstLength := int64(0)
+			dstSpace := align4K(0)
+			if dn.Type == TypeFile {
+				dstLength = int64(dn.Length)
+				dstSpace = align4K(dn.Length)
+			}
+			m.updateDirStat(ctx, trash, dstLength, dstSpace, 1)
+		} else if trash == 0 {
+			if dn.Type == TypeFile && dn.Nlink == 0 {
+				m.fileDeleted(opened, false, dino, dn.Length)
+			}
+			m.updateStats(newSpace, newInode)
+			m.updateUserGroupStat(ctx, dn.Uid, dn.Gid, newSpace, newInode)
 		}
-		m.updateStats(newSpace, newInode)
-		m.updateUserGroupStat(ctx, dn.Uid, dn.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }
@@ -2573,13 +2594,6 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		return 0
 	}
 
-	var trash Ino
-	if len(skipCheckTrash) == 0 || !skipCheckTrash[0] {
-		if st := m.checkTrash(parent, &trash); st != 0 {
-			return st
-		}
-	}
-
 	type entryInfo struct {
 		e         *edge
 		trash     Ino
@@ -2600,12 +2614,20 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		}
 		batch := entries[:batchSize]
 		entries = entries[batchSize:]
+		var trash Ino
+		if len(skipCheckTrash) == 0 || !skipCheckTrash[0] {
+			if st := m.checkTrash(parent, &trash); st != 0 {
+				return st
+			}
+		}
 		var batchFsSpace, batchFsInodes int64
 		var batchDirLength, batchDirSpace, batchDirInodes int64
+		var batchTrashLength, batchTrashSpace, batchTrashInodes int64
 		var deltas ugQuotaDeltas
 		err := m.txn(func(s *xorm.Session) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
+			batchTrashLength, batchTrashSpace, batchTrashInodes = 0, 0, 0
 			deltas = make(ugQuotaDeltas)
 			pn := node{Inode: parent}
 			ok, err := s.Get(&pn)
@@ -2818,6 +2840,13 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 						Name:   []byte(info.trashName),
 						Inode:  info.n.Inode,
 						Type:   info.n.Type})
+					if info.n.Type == TypeFile {
+						batchTrashLength += int64(info.n.Length)
+						batchTrashSpace += align4K(info.n.Length)
+					} else {
+						batchTrashSpace += align4K(0)
+					}
+					batchTrashInodes++
 				}
 				visited[info.n.Inode] = true
 			}
@@ -2896,6 +2925,9 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		delta.length += batchDirLength
 		delta.space += batchDirSpace
 		delta.inodes += batchDirInodes
+		if trash > 0 && (batchTrashSpace != 0 || batchTrashInodes != 0) {
+			m.updateDirStat(ctx, trash, batchTrashLength, batchTrashSpace, batchTrashInodes)
+		}
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
