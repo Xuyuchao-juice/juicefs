@@ -1895,7 +1895,13 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			diffLength = 0
 			if tattr.Typ == TypeDirectory {
 				m.parentMu.Lock()
-				delete(m.dirParents, *tinode)
+				if flags == RenameExchange {
+					if parentSrc != parentDst {
+						m.dirParents[*tinode] = parentSrc
+					}
+				} else {
+					delete(m.dirParents, *tinode)	
+				}
 				m.parentMu.Unlock()
 			} else if tattr.Typ == TypeFile {
 				diffLength = uint64(tattr.Length)
