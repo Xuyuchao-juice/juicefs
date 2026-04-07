@@ -1906,10 +1906,16 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			} else if tattr.Typ == TypeFile {
 				diffLength = uint64(tattr.Length)
 			}
-			if flags == RenameExchange && parentSrc != parentDst {
-				m.updateDirStat(ctx, parentSrc, int64(diffLength), align4K(diffLength), 1)
-				if quotaSrc > 0 {
-					m.updateDirQuota(ctx, parentSrc, align4K(diffLength), 1)
+			if parentSrc != parentDst {
+				m.updateDirStat(ctx, parentDst, -int64(diffLength), -align4K(diffLength), -1)
+				if quotaDst > 0 {
+					m.updateDirQuota(ctx, parentDst, -align4K(diffLength), -1)
+				}
+				if flags == RenameExchange {
+					m.updateDirStat(ctx, parentSrc, int64(diffLength), align4K(diffLength), 1)
+					if quotaSrc > 0 {
+						m.updateDirQuota(ctx, parentSrc, align4K(diffLength), 1)
+					}
 				}
 			}
 		}
