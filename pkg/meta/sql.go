@@ -1925,24 +1925,25 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 		}
 		return err
 	})
-	if err == nil && trash == 0 {
-		if n.Type == TypeFile && n.Nlink == 0 {
-			m.fileDeleted(opened, parent.IsTrash(), n.Inode, n.Length)
+	if err == nil {
+		if trash == 0 {
+			if n.Type == TypeFile && n.Nlink == 0 {
+				m.fileDeleted(opened, parent.IsTrash(), n.Inode, n.Length)
+			}
+			m.updateStats(newSpace, newInode)
+			m.updateUserGroupStat(ctx, n.Uid, n.Gid, newSpace, newInode)
+		} else {
+			trashLength := int64(0)
+			trashSpace := align4K(0)
+			if n.Type == TypeFile {
+				trashLength = int64(n.Length)
+				trashSpace = align4K(n.Length)
+			}
+			m.updateDirStat(ctx, trash, trashLength, trashSpace, 1)
 		}
-		m.updateStats(newSpace, newInode)
-		m.updateUserGroupStat(ctx, n.Uid, n.Gid, newSpace, newInode)
-	}
-	if err == nil && attr != nil {
-		m.parseAttr(&n, attr)
-	}
-	if err == nil && trash > 0 {
-		trashLength := int64(0)
-		trashSpace := align4K(0)
-		if n.Type == TypeFile {
-			trashLength = int64(n.Length)
-			trashSpace = align4K(n.Length)
+		if attr != nil {
+			m.parseAttr(&n, attr)
 		}
-		m.updateDirStat(ctx, trash, trashLength, trashSpace, 1)
 	}
 	return errno(err)
 }
@@ -2063,11 +2064,13 @@ func (m *dbMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, attr
 		}
 		return err
 	})
-	if err == nil && trash == 0 {
-		m.updateStats(-align4K(0), -1)
-		m.updateUserGroupStat(ctx, n.Uid, n.Gid, -align4K(0), -1)
-	} else if err == nil && trash > 0 {
-		m.updateDirStat(ctx, trash, 0, align4K(0), 1)
+	if err == nil {
+		if trash == 0 {
+			m.updateStats(-align4K(0), -1)
+			m.updateUserGroupStat(ctx, n.Uid, n.Gid, -align4K(0), -1)
+		} else {
+			m.updateDirStat(ctx, trash, 0, align4K(0), 1)
+		}
 	}
 	return errno(err)
 }
