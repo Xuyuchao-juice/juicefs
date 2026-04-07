@@ -11,7 +11,7 @@ require (
 	github.com/DataDog/zstd v1.5.6
 	github.com/IBM/ibm-cos-sdk-go v1.12.1
 	github.com/agiledragon/gomonkey/v2 v2.6.0
-	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.2.1
+	github.com/aliyun/alibabacloud-oss-go-sdk-v2 v1.4.1
 	github.com/aliyun/credentials-go v1.4.5
 	github.com/apple/foundationdb/bindings/go v0.0.0-20211207225159-47b9a81d1c10
 	github.com/aws/aws-sdk-go-v2 v1.36.1
@@ -76,7 +76,7 @@ require (
 	github.com/spf13/cast v1.7.1
 	github.com/stretchr/testify v1.10.0
 	github.com/studio-b12/gowebdav v0.10.0
-	github.com/tencentyun/cos-go-sdk-v5 v0.7.63
+	github.com/tencentyun/cos-go-sdk-v5 v0.7.73
 	github.com/tikv/client-go/v2 v2.0.7
 	github.com/tikv/pd/client v0.0.0-20230329114254-1948c247c2b1
 	github.com/twmb/murmur3 v1.1.8
@@ -191,7 +191,7 @@ require (
 	github.com/go-resty/resty/v2 v2.13.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
-	github.com/golang-jwt/jwt/v5 v5.2.2 // indirect
+	github.com/golang-jwt/jwt/v5 v5.2.3 // indirect
 	github.com/golang/glog v1.2.2 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
