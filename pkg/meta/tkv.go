@@ -1380,6 +1380,10 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 		if attr.Nlink > 0 {
 			tx.set(m.inodeKey(inode), m.marshal(attr))
 			if trash > 0 {
+				newSpace, newInode = align4K(0), 1
+				if _type == TypeFile {
+					newSpace = align4K(attr.Length)
+				}
 				tx.set(m.entryKey(trash, m.trashEntry(parent, inode, name)), buf)
 				if attr.Parent == 0 {
 					tx.incrBy(m.parentKey(inode, trash), 1)
@@ -1421,13 +1425,11 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 			m.updateStats(newSpace, newInode)
 			m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, newInode)
 		} else {
-			trashLength := int64(0)
-			trashSpace := align4K(0)
 			if _type == TypeFile {
-				trashLength = int64(attr.Length)
-				trashSpace = align4K(attr.Length)
+				m.updateDirStat(ctx, trash, int64(attr.Length), newSpace, newInode)
+			} else {
+				m.updateDirStat(ctx, trash, 0, newSpace, newInode)
 			}
-			m.updateDirStat(ctx, trash, trashLength, trashSpace, 1)
 		}
 	}
 	return errno(err)
@@ -2045,6 +2047,10 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			tx.delete(m.entryKey(parentSrc, nameSrc))
 			if dino > 0 {
 				if trash > 0 {
+					newSpace, newInode = align4K(0), 1
+					if dtyp == TypeFile {
+						newSpace = align4K(tattr.Length)
+					}
 					tx.set(m.inodeKey(dino), m.marshal(&tattr))
 					tx.set(m.entryKey(trash, m.trashEntry(parentDst, dino, nameDst)), dbuf)
 					if tattr.Parent == 0 {
@@ -2102,13 +2108,11 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 
 	if err == nil && !exchange && dino > 0 {
 		if trash > 0 {
-			dstLength := int64(0)
-			dstSpace := align4K(0)
 			if dtyp == TypeFile {
-				dstLength = int64(tattr.Length)
-				dstSpace = align4K(tattr.Length)
+				m.updateDirStat(ctx, trash, int64(tattr.Length), newSpace, newInode)
+			} else {
+				m.updateDirStat(ctx, trash, 0, newSpace, newInode)
 			}
-			m.updateDirStat(ctx, trash, dstLength, dstSpace, 1)
 		} else if trash == 0 {
 			if dtyp == TypeFile && tattr.Nlink == 0 {
 				m.fileDeleted(opened, false, dino, tattr.Length)
@@ -3814,8 +3818,8 @@ func (m *kvMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 		for k, v := range pairs {
 			q := m.parseQuota(v)
 			if q.MaxSpace == -1 && q.MaxInodes == -1 {
-                continue
-            }
+				continue
+			}
 			quotas[binary.BigEndian.Uint64([]byte(k[2:]))] = &DumpedQuota{
 				MaxSpace:   q.MaxSpace,
 				MaxInodes:  q.MaxInodes,

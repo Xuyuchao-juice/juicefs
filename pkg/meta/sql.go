@@ -1869,6 +1869,10 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 				return err
 			}
 			if trash > 0 {
+				newSpace, newInode = align4K(0), 1
+				if n.Type == TypeFile {
+					newSpace = align4K(n.Length)
+				}
 				if err = mustInsert(s, &edge{Parent: trash, Name: []byte(m.trashEntry(parent, e.Inode, string(e.Name))), Inode: e.Inode, Type: e.Type}); err != nil {
 					return err
 				}
@@ -1933,13 +1937,11 @@ func (m *dbMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 			m.updateStats(newSpace, newInode)
 			m.updateUserGroupStat(ctx, n.Uid, n.Gid, newSpace, newInode)
 		} else {
-			trashLength := int64(0)
-			trashSpace := align4K(0)
 			if n.Type == TypeFile {
-				trashLength = int64(n.Length)
-				trashSpace = align4K(n.Length)
+				m.updateDirStat(ctx, trash, int64(n.Length), newSpace, newInode)
+			} else {
+				m.updateDirStat(ctx, trash, 0, newSpace, newInode)
 			}
-			m.updateDirStat(ctx, trash, trashLength, trashSpace, 1)
 		}
 		if attr != nil {
 			m.parseAttr(&n, attr)
@@ -2340,6 +2342,10 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			}
 			if dino > 0 {
 				if trash > 0 {
+					newSpace, newInode = align4K(0), 1
+					if de.Type == TypeFile {
+						newSpace = align4K(dn.Length)
+					}
 					if _, err := s.Cols("ctime", "ctimensec", "parent").Update(dn, &node{Inode: dino}); err != nil {
 						return err
 					}
@@ -2454,13 +2460,11 @@ func (m *dbMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 	}, parentLocks...)
 	if err == nil && !exchange && dino > 0 {
 		if trash > 0 {
-			dstLength := int64(0)
-			dstSpace := align4K(0)
 			if dn.Type == TypeFile {
-				dstLength = int64(dn.Length)
-				dstSpace = align4K(dn.Length)
+				m.updateDirStat(ctx, trash, int64(dn.Length), newSpace, newInode)
+			} else {
+				m.updateDirStat(ctx, trash, 0, newSpace, newInode)
 			}
-			m.updateDirStat(ctx, trash, dstLength, dstSpace, 1)
 		} else if trash == 0 {
 			if dn.Type == TypeFile && dn.Nlink == 0 {
 				m.fileDeleted(opened, false, dino, dn.Length)
