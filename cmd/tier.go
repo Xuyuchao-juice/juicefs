@@ -83,6 +83,11 @@ $ juicefs tier restore redis://localhost /dir1`,
 				Aliases: []string{"r"},
 				Usage:   "recursively set storage tier for all files and directories under the target directory",
 			},
+			&cli.BoolFlag{
+				Name:    "force",
+				Aliases: []string{"f"},
+				Usage:   "force rewriting objects to the tier's current storage class (useful after --tier-sc config changes), even when the tier id is unchanged",
+			},
 		},
 	}
 }
@@ -140,12 +145,7 @@ func setTier(ctx *cli.Context) error {
 		logger.Fatal("only file and directory are supported to set storage tier")
 	}
 	oldTier := format.Tiers[attr.Tier]
-	if attr.Tier == uint8(id) {
-		logger.Infof("storage class of %q is already %d(%s), no change needed", path, id, oldTier.GetHumanSc())
-		return nil
-	}
 	logger.Infof("set storage tier of %q from %d(%s) to %d(%s)", path, attr.Tier, oldTier.GetHumanSc(), id, newTier.GetHumanSc())
-
 	blob, err := createStorage(*format)
 	if err != nil {
 		logger.Fatalf("object storage: %s", err)
@@ -163,25 +163,30 @@ func setTier(ctx *cli.Context) error {
 		ctx := context.WithValue(context.Background(), object.TierKey{}, uint8(id))
 		return blob.Copy(ctx, fullPath, fullPath)
 	}
+	checkFunc := func(ino meta.Ino, oriTier uint8) bool {
+		if id == uint(oriTier) && !ctx.Bool("force") {
+			logger.Debugf("inode:%d storage tier is already %d, no change needed", ino, oriTier)
+			return true
+		}
+		return false
+	}
 	switch attr.Typ {
 	case meta.TypeFile:
-		err = visitEntry(m, format, objectFunc, metaFunc, ino, attr.Length)
+		err = visitEntry(m, format, ino, attr, objectFunc, metaFunc, checkFunc)
 	case meta.TypeDirectory:
-		if err = visitDir(m, format, objectFunc, metaFunc, ino, ctx.Bool("recursive")); err != nil {
-			return err
+		if ctx.Bool("recursive") {
+			if err = visitDir(m, format, ino, ctx.Bool("recursive"), objectFunc, metaFunc, checkFunc); err != nil {
+				return err
+			}
 		}
 		if err = metaFunc(ino); err != nil {
-			return err
+			return fmt.Errorf("set tier for inode %d tierID:%d failed: %w", ino, newTier.ID, err)
 		}
 
 	default:
 		logger.Fatal("only file and directory are supported to set storage tier")
 	}
-	if err != nil {
-		return err
-	}
-	logger.Infof("storage tier of %q is set to %d(%s)", path, id, newTier.GetHumanSc())
-	return nil
+	return err
 }
 
 func objRestore(ctx *cli.Context) error {
@@ -215,15 +220,15 @@ func objRestore(ctx *cli.Context) error {
 		return blob.Restore(context.Background(), key)
 	}
 	if attr.Typ == meta.TypeFile {
-		err = visitEntry(m, format, objectFunc, nil, ino, attr.Length)
+		err = visitEntry(m, format, ino, attr, objectFunc, nil, nil)
 	}
 	if attr.Typ == meta.TypeDirectory {
-		err = visitDir(m, format, objectFunc, nil, ino, ctx.Bool("recursive"))
+		err = visitDir(m, format, ino, ctx.Bool("recursive"), objectFunc, nil, nil)
 	}
 	return err
 }
 
-func visitDir(m meta.Meta, format *meta.Format, objectFunc func(key string) error, metaFunc func(ino meta.Ino) error, ino meta.Ino, recursive bool) error {
+func visitDir(m meta.Meta, format *meta.Format, ino meta.Ino, recursive bool, objectFunc func(key string) error, metaFunc func(ino meta.Ino) error, checkFunc func(ino meta.Ino, oriTier uint8) bool) error {
 	handler, errno := m.NewDirHandler(meta.Background(), ino, true, nil)
 	if errno != 0 {
 		return errno
@@ -242,14 +247,14 @@ func visitDir(m meta.Meta, format *meta.Format, objectFunc func(key string) erro
 				continue
 			}
 			if e.Attr.Typ == meta.TypeFile {
-				err := visitEntry(m, format, objectFunc, metaFunc, e.Inode, e.Attr.Length)
+				err := visitEntry(m, format, e.Inode, *e.Attr, objectFunc, metaFunc, checkFunc)
 				if err != nil {
 					return err
 				}
 			}
 			if e.Attr.Typ == meta.TypeDirectory {
 				if recursive {
-					if err := visitDir(m, format, objectFunc, metaFunc, e.Inode, recursive); err != nil {
+					if err := visitDir(m, format, e.Inode, recursive, objectFunc, metaFunc, checkFunc); err != nil {
 						return err
 					}
 				}
@@ -282,20 +287,25 @@ func getObjKeys(m meta.Meta, format *meta.Format, ino meta.Ino, length uint64) [
 	}
 	return objs
 }
-
-func visitEntry(m meta.Meta, format *meta.Format, objectFunc func(key string) error, metaFunc func(ino meta.Ino) error, ino meta.Ino, length uint64) error {
-	objs := getObjKeys(m, format, ino, length)
+func visitEntry(m meta.Meta, format *meta.Format, ino meta.Ino, attr meta.Attr, objectFunc func(key string) error, metaFunc func(ino meta.Ino) error, checkFunc func(ino meta.Ino, oriTier uint8) bool) error {
+	if checkFunc != nil && checkFunc(ino, attr.Tier) {
+		return nil
+	}
+	objs := getObjKeys(m, format, ino, attr.Length)
 	if objectFunc != nil {
-		for _, obj := range objs {
-			err := objectFunc(obj)
-			if err != nil {
-				logger.Errorf("apply objectFunc failed %s: %s", obj, err)
-				return err
+		for _, key := range objs {
+			if key != "" {
+				err := objectFunc(key)
+				if err != nil {
+					return fmt.Errorf("apply object action failed in inode:%d key:%v: err:%s", ino, key, err)
+				}
 			}
 		}
 	}
 	if metaFunc != nil {
-		return metaFunc(ino)
+		if err := metaFunc(ino); err != nil {
+			return fmt.Errorf("set tier for inode %d failed: %w", ino, err)
+		}
 	}
 	return nil
 }

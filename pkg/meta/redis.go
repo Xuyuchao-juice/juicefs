@@ -4918,7 +4918,6 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	m.loadDumpedQuotas(Background(), dm)
 	if err = m.loadDumpedACLs(ctx); err != nil {
 		return err
 	}
@@ -4989,6 +4988,7 @@ func (m *redisMeta) LoadMeta(r io.Reader) (err error) {
 		}
 	}
 	_, err = p.Exec(ctx)
+	m.loadDumpedQuotas(ctx, dm)
 	return err
 }
 
@@ -5006,6 +5006,9 @@ func (m *redisMeta) loadQuotasForDump(ctx Context, quotaKey string) map[uint64]*
 		}
 		var quota DumpedQuota
 		quota.MaxSpace, quota.MaxInodes = m.parseQuota([]byte(v))
+		if quota.MaxSpace == -1 && quota.MaxInodes == -1 {
+			continue
+		}
 		quotas[id] = &quota
 	}
 	return quotas

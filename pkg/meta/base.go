@@ -1891,7 +1891,7 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 				}
 			}
 		}
-		if tinode != nil && *tinode > 0 {
+		if *tinode > 0 {
 			diffLength = 0
 			if tattr.Typ == TypeDirectory {
 				m.parentMu.Lock()
@@ -1900,21 +1900,24 @@ func (m *baseMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 						m.dirParents[*tinode] = parentSrc
 					}
 				} else {
-					delete(m.dirParents, *tinode)	
+					delete(m.dirParents, *tinode)
 				}
 				m.parentMu.Unlock()
 			} else if tattr.Typ == TypeFile {
 				diffLength = uint64(tattr.Length)
+
 			}
-			if flags == RenameExchange && parentSrc != parentDst {
+			if parentSrc != parentDst || flags != RenameExchange {
+				m.updateDirStat(ctx, parentDst, -int64(diffLength), -align4K(diffLength), -1)
+				if quotaDst > 0 {
+					m.updateDirQuota(ctx, parentDst, -align4K(diffLength), -1)
+				}
+			}
+			if parentSrc != parentDst && flags == RenameExchange {
 				m.updateDirStat(ctx, parentSrc, int64(diffLength), align4K(diffLength), 1)
 				if quotaSrc > 0 {
 					m.updateDirQuota(ctx, parentSrc, align4K(diffLength), 1)
 				}
-			}
-			m.updateDirStat(ctx, parentDst, -int64(diffLength), -align4K(diffLength), -1)
-			if quotaDst > 0 {
-				m.updateDirQuota(ctx, parentDst, -align4K(diffLength), -1)
 			}
 		}
 	}
