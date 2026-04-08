@@ -2137,7 +2137,6 @@ func testTrash(t *testing.T, m Meta) {
 	}
 	waitDirStatInodes := func(ino Ino, expected int64, scene string) {
 		for i := 0; i < 20; i++ {
-			time.Sleep(100 * time.Millisecond)
 			m.FlushSession()
 			if stat := getDirStat(ino); stat.inodes == expected {
 				return
@@ -2303,7 +2302,6 @@ func testTrash(t *testing.T, m Meta) {
 	if batchCount != 2 {
 		t.Fatalf("batch unlink count: expect 2, got %d", batchCount)
 	}
-	time.Sleep(500 * time.Millisecond)
 	m.FlushSession()
 	trashAfterBatch := getDirStat(trashDir)
 	if trashAfterBatch.inodes < trashBeforeBatch.inodes+2 {
