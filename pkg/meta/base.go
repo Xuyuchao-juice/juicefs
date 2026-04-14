@@ -2425,7 +2425,7 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 		if !needSyncVolumeStat || ino == RootInode || ino == TrashInode {
 			return
 		}
-		if attr.Typ == TypeFile {
+		if attr.Typ != TypeDirectory {
 			if attr.Nlink > 1 {
 				if seen[ino] {
 					return
@@ -3126,28 +3126,6 @@ func (m *baseMeta) CleanupTrashBefore(ctx Context, edge time.Time, increProgress
 		}
 	}
 	return 0
-}
-
-func (m *baseMeta) scanTrashEntry(ctx Context, scan func(inode Ino, size uint64)) error {
-	var st syscall.Errno
-	var entries []*Entry
-	if st = m.en.doReaddir(ctx, TrashInode, 1, &entries, -1); st != 0 {
-		return errors.Wrap(st, "read trash")
-	}
-
-	var subEntries []*Entry
-	for _, entry := range entries {
-		scan(entry.Inode, entry.Attr.Length)
-		subEntries = subEntries[:0]
-		if st = m.en.doReaddir(ctx, entry.Inode, 1, &subEntries, -1); st != 0 {
-			logger.Warnf("readdir subEntry %d: %s", entry.Inode, st)
-			continue
-		}
-		for _, se := range subEntries {
-			scan(se.Inode, se.Attr.Length)
-		}
-	}
-	return nil
 }
 
 func (m *baseMeta) scanTrashFiles(ctx Context, scan trashFileScan) error {

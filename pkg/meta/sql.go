@@ -1215,7 +1215,7 @@ func (m *dbMeta) updateStats(space int64, inodes int64) {
 	atomic.AddInt64(&m.newInodes, inodes)
 }
 
-func (m *dbMeta) doSyncVolumeStat(ctx Context, used, inode int64) error {
+func (m *dbMeta) doSyncVolumeStat(ctx Context, used, inodes int64) error {
 	if m.conf.ReadOnly {
 		return syscall.EROFS
 	}
@@ -1231,15 +1231,15 @@ func (m *dbMeta) doSyncVolumeStat(ctx Context, used, inode int64) error {
 				continue
 			}
 			used += align4K(uint64(value))
-			inode += 1
+			inodes += 1
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
-	logger.Debugf("Used space: %s, inodes: %d", humanize.IBytes(uint64(used)), inode)
+	logger.Debugf("Used space: %s, inodes: %d", humanize.IBytes(uint64(used)), inodes)
 	return m.txn(func(s *xorm.Session) error {
-		if _, err := s.Cols("value").Update(&counter{Value: inode}, &counter{Name: totalInodes}); err != nil {
+		if _, err := s.Cols("value").Update(&counter{Value: inodes}, &counter{Name: totalInodes}); err != nil {
 			return fmt.Errorf("update totalInodes: %s", err)
 		}
 		_, err := s.Cols("value").Update(&counter{Value: used}, &counter{Name: usedSpace})
