@@ -138,7 +138,7 @@ type engine interface {
 	// @trySync: try sync dir stat if broken or not existed
 	doGetDirStat(ctx Context, ino Ino, trySync bool) (*dirStat, syscall.Errno)
 	doSyncDirStat(ctx Context, ino Ino) (*dirStat, syscall.Errno)
-	doSyncVolumeStat(ctx Context) error
+	doSyncVolumeStat(ctx Context, used, inodes int64) error
 
 	scanTrashSlices(Context, trashSliceScan) error
 	scanPendingSlices(Context, pendingSliceScan) error
@@ -2418,6 +2418,27 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 	nodeBar := progress.AddCountBar("Checked nodes", 0)
 
 	var hasError bool
+	needSyncVolumeStat := fpath == "/" && opt.Repair && opt.Recursive && opt.SyncDirStat
+	seen := make(map[Ino]bool)
+	var volumeUsed, volumeInodes int64
+	recordStat := func(ino Ino, attr *Attr) {
+		if !needSyncVolumeStat || ino == RootInode || ino == TrashInode {
+			return
+		}
+		if attr.Typ == TypeFile {
+			if attr.Nlink > 1 {
+				if seen[ino] {
+					return
+				}
+				seen[ino] = true
+			}
+			volumeUsed += align4K(attr.Length)
+			volumeInodes += 1
+			return
+		}
+		volumeUsed += align4K(0)
+		volumeInodes += 1
+	}
 	type node struct {
 		inode Ino
 		path  string
@@ -2429,13 +2450,24 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 		var count int64
 		if opt.Recursive {
 			if st := m.walk(ctx, inode, fpath, &attr, func(ctx Context, inode Ino, path string, attr *Attr) {
+				recordStat(inode, attr)
 				nodes <- &node{inode, path, attr}
 				atomic.AddInt64(&count, 1)
 			}); st != 0 {
 				hasError = true
 				logger.Errorf("Walk %s: %s", fpath, st)
 			}
+			if needSyncVolumeStat && m.getFormat().TrashDays > 0 {
+				trashAttr := Attr{Typ: TypeDirectory}
+				if st := m.walk(ctx, TrashInode, "/.trash", &trashAttr, func(_ Context, ino Ino, _ string, a *Attr) {
+					recordStat(ino, a)
+				}); st != 0 {
+					hasError = true
+					logger.Errorf("Walk /.trash: %s", st)
+				}
+			}
 		} else {
+			recordStat(inode, &attr)
 			nodes <- &node{inode, fpath, &attr}
 			count = 1
 		}
@@ -2584,8 +2616,8 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 		}()
 	}
 	wg.Wait()
-	if fpath == "/" && opt.Repair && opt.Recursive && opt.SyncDirStat {
-		if err := m.syncVolumeStat(ctx); err != nil {
+	if needSyncVolumeStat {
+		if err := m.syncVolumeStat(ctx, volumeUsed, volumeInodes); err != nil {
 			logger.Errorf("Sync used space: %s", err)
 			hasError = true
 		}

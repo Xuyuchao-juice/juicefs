@@ -1215,18 +1215,9 @@ func (m *dbMeta) updateStats(space int64, inodes int64) {
 	atomic.AddInt64(&m.newInodes, inodes)
 }
 
-func (m *dbMeta) doSyncVolumeStat(ctx Context) error {
+func (m *dbMeta) doSyncVolumeStat(ctx Context, used, inode int64) error {
 	if m.conf.ReadOnly {
 		return syscall.EROFS
-	}
-	var used, inode int64
-	if err := m.simpleTxn(ctx, func(s *xorm.Session) error {
-		total, err := s.SumsInt(&dirStats{}, "used_space", "used_inodes")
-		used += total[0]
-		inode += total[1]
-		return err
-	}); err != nil {
-		return err
 	}
 	if err := m.simpleTxn(ctx, func(s *xorm.Session) error {
 		queryResultMap, err := s.QueryString(m.sqlConv("SELECT length FROM node WHERE inode IN (SELECT inode FROM sustained)"))
@@ -1243,13 +1234,6 @@ func (m *dbMeta) doSyncVolumeStat(ctx Context) error {
 			inode += 1
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-
-	if err := m.scanTrashEntry(ctx, func(_ Ino, length uint64) {
-		used += align4K(length)
-		inode += 1
 	}); err != nil {
 		return err
 	}
