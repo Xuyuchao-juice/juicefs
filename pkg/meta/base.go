@@ -3124,7 +3124,27 @@ func (m *baseMeta) scanTrashFiles(ctx Context, scan trashFileScan) error {
 	if st = m.en.doReaddir(ctx, TrashInode, 1, &entries, -1); st != 0 {
 		return errors.Wrap(st, "read trash")
 	}
-
+	if m.fmt.DirStats {
+		for _, entry := range entries {
+			ts, err := time.Parse("2006-01-02-15", string(entry.Name))
+			if err != nil {
+				logger.Warnf("bad entry as a subTrash: %s", entry.Name)
+				continue
+			}
+			if ds, st := m.GetDirStat(ctx, entry.Inode); st == 0 && ds != nil {
+				for i := int64(0); i < ds.inodes; i++ {
+					avgSize := uint64(ds.length / ds.inodes)
+					if i == ds.inodes-1 {
+						avgSize = uint64(ds.length) - avgSize*uint64(ds.inodes-1)
+					}
+					if _, err := scan(0, avgSize, ts); err != nil {
+						return errors.Wrap(err, "scan trash files")
+					}
+				}
+			}
+		}
+		return nil
+	}
 	var subEntries []*Entry
 	for _, entry := range entries {
 		ts, err := time.Parse("2006-01-02-15", string(entry.Name))
