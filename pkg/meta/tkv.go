@@ -846,7 +846,11 @@ func (m *kvMeta) txn(ctx Context, f func(tx *kvTxn) error, inodes ...Ino) error 
 		method  txMethod
 	)
 
-	for i := 0; i < 50; i++ {
+	maxRetry := 50
+	if val := ctx.Value(txMaxRetryKey{}); val != nil {
+		maxRetry = val.(int)
+	}
+	for i := 0; i < maxRetry; i++ {
 		if ctx.Canceled() {
 			logger.Warnf("Transaction %s interrupted after %s, tried %d, inodes: %v", method.name(ctx), time.Since(start), i+1, inodes)
 			return syscall.EINTR
@@ -866,7 +870,7 @@ func (m *kvMeta) txn(ctx Context, f func(tx *kvTxn) error, inodes ...Ino) error 
 		}
 		return err
 	}
-	logger.Warnf("Already tried 50 times, returning: %s", lastErr)
+	logger.Warnf("Already tried %d times, returning: %s", maxRetry, lastErr)
 	return lastErr
 }
 
@@ -1380,6 +1384,10 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 		if attr.Nlink > 0 {
 			tx.set(m.inodeKey(inode), m.marshal(attr))
 			if trash > 0 {
+				newSpace, newInode = align4K(0), 1
+				if _type == TypeFile {
+					newSpace = align4K(attr.Length)
+				}
 				tx.set(m.entryKey(trash, m.trashEntry(parent, inode, name)), buf)
 				if attr.Parent == 0 {
 					tx.incrBy(m.parentKey(inode, trash), 1)
@@ -1413,12 +1421,20 @@ func (m *kvMeta) doUnlink(ctx Context, parent Ino, name string, attr *Attr, skip
 		}
 		return nil
 	}, parent)
-	if err == nil && trash == 0 {
-		if _type == TypeFile && attr.Nlink == 0 {
-			m.fileDeleted(opened, parent.IsTrash(), inode, attr.Length)
+	if err == nil {
+		if trash == 0 {
+			if _type == TypeFile && attr.Nlink == 0 {
+				m.fileDeleted(opened, parent.IsTrash(), inode, attr.Length)
+			}
+			m.updateStats(newSpace, newInode)
+			m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, newInode)
+		} else {
+			if _type == TypeFile {
+				m.updateDirStat(ctx, trash, int64(attr.Length), newSpace, newInode)
+			} else {
+				m.updateDirStat(ctx, trash, 0, newSpace, newInode)
+			}
 		}
-		m.updateStats(newSpace, newInode)
-		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }
@@ -1427,7 +1443,6 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 	if len(entries) == 0 {
 		return 0
 	}
-
 	// Each entry averages ~6 tx operations, so batch size should be 10000/6
 	maxOps := 10000
 	if m.Name() == "etcd" {
@@ -1448,7 +1463,6 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		opened bool
 		length uint64
 	}
-
 	for len(entries) > 0 {
 		batchSize := batchNum
 		if batchSize > len(entries) {
@@ -1456,7 +1470,6 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		}
 		batch := entries[:batchSize]
 		entries = entries[batchSize:]
-
 		var trash Ino
 		if len(skipCheckTrash) == 0 || !skipCheckTrash[0] {
 			if st := m.checkTrash(parent, &trash); st != 0 {
@@ -1466,12 +1479,14 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 
 		var entryInfos []*entryInfo
 		var batchDirLength, batchDirSpace, batchDirInodes int64
+		var batchTrashLength, batchTrashSpace, batchTrashInodes int64
 		var batchFsSpace, batchFsInodes int64
 		var deltas ugQuotaDeltas
 		var delNodes map[Ino]*dNode
 
 		err := m.txn(ctx, func(tx *kvTxn) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
+			batchTrashLength, batchTrashSpace, batchTrashInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
 			deltas = make(ugQuotaDeltas)
 			delNodes = make(map[Ino]*dNode)
@@ -1676,6 +1691,13 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 					if info.attr.Parent == 0 {
 						tx.incrBy(m.parentKey(info.inode, info.trash), 1)
 					}
+					if info.typ == TypeFile {
+						batchTrashLength += int64(info.attr.Length)
+						batchTrashSpace += align4K(info.attr.Length)
+					} else {
+						batchTrashSpace += align4K(0)
+					}
+					batchTrashInodes++
 				}
 				if info.attr.Parent == 0 && info.attr.Nlink > 0 {
 					tx.incrBy(m.parentKey(info.inode, parent), -1)
@@ -1702,6 +1724,9 @@ func (m *kvMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		delta.length += batchDirLength
 		delta.space += batchDirSpace
 		delta.inodes += batchDirInodes
+		if trash > 0 && (batchTrashSpace != 0 || batchTrashInodes != 0) {
+			m.updateDirStat(ctx, trash, batchTrashLength, batchTrashSpace, batchTrashInodes)
+		}
 		m.updateStats(batchFsSpace, batchFsInodes)
 		for _, q := range deltas {
 			m.updateUserGroupStat(ctx, q.Uid, q.Gid, q.Space, q.Inodes)
@@ -1806,9 +1831,13 @@ func (m *kvMeta) doRmdir(ctx Context, parent Ino, name string, pinode *Ino, oldA
 		}
 		return nil
 	}, parent)
-	if err == nil && trash == 0 {
-		m.updateStats(-align4K(0), -1)
-		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, -align4K(0), -1)
+	if err == nil {
+		if trash == 0 {
+			m.updateStats(-align4K(0), -1)
+			m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, -align4K(0), -1)
+		} else {
+			m.updateDirStat(ctx, trash, 0, align4K(0), 1)
+		}
 	}
 	return errno(err)
 }
@@ -2022,6 +2051,10 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 			tx.delete(m.entryKey(parentSrc, nameSrc))
 			if dino > 0 {
 				if trash > 0 {
+					newSpace, newInode = align4K(0), 1
+					if dtyp == TypeFile {
+						newSpace = align4K(tattr.Length)
+					}
 					tx.set(m.inodeKey(dino), m.marshal(&tattr))
 					tx.set(m.entryKey(trash, m.trashEntry(parentDst, dino, nameDst)), dbuf)
 					if tattr.Parent == 0 {
@@ -2076,12 +2109,21 @@ func (m *kvMeta) doRename(ctx Context, parentSrc Ino, nameSrc string, parentDst 
 		}
 		return nil
 	}, parentLocks...)
-	if err == nil && !exchange && trash == 0 {
-		if dino > 0 && dtyp == TypeFile && tattr.Nlink == 0 {
-			m.fileDeleted(opened, false, dino, tattr.Length)
+
+	if err == nil && !exchange && dino > 0 {
+		if trash > 0 {
+			if dtyp == TypeFile {
+				m.updateDirStat(ctx, trash, int64(tattr.Length), newSpace, newInode)
+			} else {
+				m.updateDirStat(ctx, trash, 0, newSpace, newInode)
+			}
+		} else if trash == 0 {
+			if dtyp == TypeFile && tattr.Nlink == 0 {
+				m.fileDeleted(opened, false, dino, tattr.Length)
+			}
+			m.updateStats(newSpace, newInode)
+			m.updateUserGroupStat(ctx, tattr.Uid, tattr.Gid, newSpace, newInode)
 		}
-		m.updateStats(newSpace, newInode)
-		m.updateUserGroupStat(ctx, tattr.Uid, tattr.Gid, newSpace, newInode)
 	}
 	return errno(err)
 }
@@ -3780,8 +3822,8 @@ func (m *kvMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 		for k, v := range pairs {
 			q := m.parseQuota(v)
 			if q.MaxSpace == -1 && q.MaxInodes == -1 {
-                continue
-            }
+				continue
+			}
 			quotas[binary.BigEndian.Uint64([]byte(k[2:]))] = &DumpedQuota{
 				MaxSpace:   q.MaxSpace,
 				MaxInodes:  q.MaxInodes,
@@ -4177,8 +4219,190 @@ func (m *kvMeta) doCleanupDetachedNode(ctx Context, ino Ino) syscall.Errno {
 }
 
 func (m *kvMeta) doBatchClone(ctx Context, srcParent Ino, dstParent Ino, entries []*Entry, cmode uint8, cumask uint16, result *batchCloneResult) syscall.Errno {
-	// TODO: Implement batch clone for TKV backend
-	return syscall.ENOTSUP
+	if len(entries) == 0 {
+		return 0
+	}
+
+	type cloneInfo struct {
+		srcIno Ino
+		dstIno Ino
+		name   string
+	}
+
+	cloneInfos := make([]*cloneInfo, len(entries))
+	srcInodes := make([]Ino, 0, len(entries))
+	srcInodeSet := make(map[Ino]struct{}, len(entries))
+	for i, e := range entries {
+		dstIno, err := m.nextInode()
+		if err != nil {
+			return errno(err)
+		}
+		cloneInfos[i] = &cloneInfo{srcIno: e.Inode, dstIno: dstIno, name: string(e.Name)}
+		if _, exists := srcInodeSet[e.Inode]; !exists {
+			srcInodeSet[e.Inode] = struct{}{}
+			srcInodes = append(srcInodes, e.Inode)
+		}
+	}
+
+	return errno(m.txn(ctx.WithValue(txMaxRetryKey{}, 1), func(tx *kvTxn) error {
+		now := time.Now()
+		*result = batchCloneResult{deltas: make(ugQuotaDeltas)}
+
+		// validate destination parent
+		pa := tx.get(m.inodeKey(dstParent))
+		if pa == nil {
+			return syscall.ENOENT
+		}
+		var pattr Attr
+		m.parseAttr(pa, &pattr)
+		if pattr.Typ != TypeDirectory {
+			return syscall.ENOTDIR
+		}
+		if (pattr.Flags & FlagImmutable) != 0 {
+			return syscall.EPERM
+		}
+		if eno := m.Access(ctx, dstParent, MODE_MASK_W|MODE_MASK_X, &pattr); eno != 0 {
+			return eno
+		}
+
+		// batch fetch all source inodes
+		srcKeys := make([][]byte, len(srcInodes))
+		for i, ino := range srcInodes {
+			srcKeys[i] = m.inodeKey(ino)
+		}
+		srcVals := tx.gets(srcKeys...)
+		srcNodeMap := make(map[Ino][]byte, len(srcInodes))
+		for i, ino := range srcInodes {
+			if srcVals[i] == nil {
+				return syscall.ENOENT
+			}
+			srcNodeMap[ino] = srcVals[i]
+		}
+
+		type fileCloneInfo struct {
+			srcIno Ino
+			dstIno Ino
+			length uint64
+		}
+		type symlinkCloneInfo struct {
+			srcIno Ino
+			dstIno Ino
+		}
+		fileClones := make([]fileCloneInfo, 0)
+		symlinkClones := make([]symlinkCloneInfo, 0)
+
+		for _, info := range cloneInfos {
+			sv, ok := srcNodeMap[info.srcIno]
+			if !ok {
+				return syscall.ENOENT
+			}
+			var attr Attr
+			m.parseAttr(sv, &attr)
+			if attr.Typ == TypeDirectory {
+				return syscall.EINVAL
+			}
+			if eno := m.Access(ctx, info.srcIno, MODE_MASK_R, &attr); eno != 0 {
+				return eno
+			}
+
+			attr.Parent = dstParent
+			if cmode&CLONE_MODE_PRESERVE_ATTR == 0 {
+				attr.Uid = ctx.Uid()
+				attr.Gid = ctx.Gid()
+				attr.Mode &= ^cumask
+				attr.Atime = now.Unix()
+				attr.Mtime = now.Unix()
+				attr.Ctime = now.Unix()
+				attr.Atimensec = uint32(now.Nanosecond())
+				attr.Mtimensec = uint32(now.Nanosecond())
+				attr.Ctimensec = uint32(now.Nanosecond())
+			}
+			if attr.Typ == TypeFile && attr.Nlink > 1 {
+				attr.Nlink = 1
+			}
+
+			// check entry does not exist
+			if tx.get(m.entryKey(dstParent, info.name)) != nil {
+				return syscall.EEXIST
+			}
+			if m.conf.CaseInsensi {
+				if e := m.resolveCase(ctx, dstParent, info.name); e != nil {
+					return syscall.EEXIST
+				}
+			}
+
+			// write destination inode and entry
+			tx.set(m.inodeKey(info.dstIno), m.marshal(&attr))
+			tx.set(m.entryKey(dstParent, info.name), m.packEntry(attr.Typ, info.dstIno))
+
+			switch attr.Typ {
+			case TypeFile:
+				if attr.Length > 0 {
+					fileClones = append(fileClones, fileCloneInfo{srcIno: info.srcIno, dstIno: info.dstIno, length: attr.Length})
+				}
+			case TypeSymlink:
+				symlinkClones = append(symlinkClones, symlinkCloneInfo{srcIno: info.srcIno, dstIno: info.dstIno})
+			}
+
+			// copy xattrs
+			prefix := m.xattrKey(info.srcIno, "")
+			tx.scan(prefix, nextKey(prefix), false, func(k, v []byte) bool {
+				tx.set(m.xattrKey(info.dstIno, string(k[len(prefix):])), v)
+				return true
+			})
+
+			entrySpace := align4K(attr.Length)
+			if attr.Typ == TypeFile {
+				result.length += int64(attr.Length)
+			}
+			result.space += entrySpace
+			result.inodes++
+			result.deltas.add(&ugQuotaDelta{
+				Uid:    attr.Uid,
+				Gid:    attr.Gid,
+				Space:  entrySpace,
+				Inodes: 1,
+			})
+		}
+
+		// copy file chunks and update slice refs
+		refCounts := make(map[string]int) // sliceKey -> delta
+		for _, fc := range fileClones {
+			tx.scan(m.chunkKey(fc.srcIno, 0), m.chunkKey(fc.srcIno, uint32(fc.length/ChunkSize)+1),
+				false, func(k, v []byte) bool {
+					// extract chunk index from key
+					indx := binary.BigEndian.Uint32(k[len(k)-4:])
+					tx.set(m.chunkKey(fc.dstIno, indx), v)
+					for _, s := range readSliceBuf(v) {
+						if s.id > 0 {
+							refCounts[string(m.sliceKey(s.id, s.size))]++
+						}
+					}
+					return true
+				})
+		}
+		if len(refCounts) > 0 {
+			refKeys := make([][]byte, 0, len(refCounts))
+			for k := range refCounts {
+				refKeys = append(refKeys, []byte(k))
+			}
+			refs := tx.gets(refKeys...)
+			for i, k := range refKeys {
+				tx.set(k, packCounter(parseCounter(refs[i])+int64(refCounts[string(k)])))
+			}
+		}
+
+		// copy symlinks
+		for _, sc := range symlinkClones {
+			target := tx.get(m.symKey(sc.srcIno))
+			if target == nil {
+				return syscall.ENOENT
+			}
+			tx.set(m.symKey(sc.dstIno), target)
+		}
+
+		return nil
+	}, dstParent))
 }
 
 func (m *kvMeta) doAttachDirNode(ctx Context, parent Ino, inode Ino, name string) syscall.Errno {
