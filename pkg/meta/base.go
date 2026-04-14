@@ -166,7 +166,7 @@ type engine interface {
 
 type trashSliceScan func(ss []Slice, ts int64) (clean bool, err error)
 type pendingSliceScan func(id uint64, size uint32) (clean bool, err error)
-type trashFileScan func(inode Ino, size uint64, ts time.Time) (clean bool, err error)
+type trashFileScan func(inode Ino, size uint64, ts time.Time, count int64) (clean bool, err error)
 type pendingFileScan func(ino Ino, size uint64, ts int64) (clean bool, err error)
 
 // fsStat aligned for atomic operations
@@ -3131,16 +3131,13 @@ func (m *baseMeta) scanTrashFiles(ctx Context, scan trashFileScan) error {
 				logger.Warnf("bad entry as a subTrash: %s", entry.Name)
 				continue
 			}
-			if ds, st := m.GetDirStat(ctx, entry.Inode); st == 0 && ds != nil {
-				for i := int64(0); i < ds.inodes; i++ {
-					avgSize := uint64(ds.length / ds.inodes)
-					if i == ds.inodes-1 {
-						avgSize = uint64(ds.length) - avgSize*uint64(ds.inodes-1)
-					}
-					if _, err := scan(0, avgSize, ts); err != nil {
-						return errors.Wrap(err, "scan trash files")
-					}
-				}
+			ds, st := m.GetDirStat(ctx, entry.Inode)
+			if st != 0 || ds == nil {
+				logger.Warnf("get dir stat %d: %s", entry.Inode, st)
+				continue
+			}
+			if _, err := scan(0, uint64(ds.length), ts, ds.inodes); err != nil {
+				return errors.Wrap(err, "scan trash files")
 			}
 		}
 		return nil
@@ -3159,7 +3156,7 @@ func (m *baseMeta) scanTrashFiles(ctx Context, scan trashFileScan) error {
 		}
 		for _, se := range subEntries {
 			if se.Attr.Typ == TypeFile {
-				clean, err := scan(se.Inode, se.Attr.Length, ts)
+				clean, err := scan(se.Inode, se.Attr.Length, ts, 1)
 				if err != nil {
 					return errors.Wrap(err, "scan trash files")
 				}
