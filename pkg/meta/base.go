@@ -3124,30 +3124,22 @@ func (m *baseMeta) scanTrashFiles(ctx Context, scan trashFileScan) error {
 	if st = m.en.doReaddir(ctx, TrashInode, 1, &entries, -1); st != 0 {
 		return errors.Wrap(st, "read trash")
 	}
-	if m.fmt.DirStats {
-		for _, entry := range entries {
-			ts, err := time.Parse("2006-01-02-15", string(entry.Name))
-			if err != nil {
-				logger.Warnf("bad entry as a subTrash: %s", entry.Name)
-				continue
-			}
-			ds, st := m.GetDirStat(ctx, entry.Inode)
-			if st != 0 || ds == nil {
-				logger.Warnf("get dir stat %d: %s", entry.Inode, st)
-				continue
-			}
-			if _, err := scan(0, uint64(ds.length), ts, ds.inodes); err != nil {
-				return errors.Wrap(err, "scan trash files")
-			}
-		}
-		return nil
-	}
 	var subEntries []*Entry
 	for _, entry := range entries {
 		ts, err := time.Parse("2006-01-02-15", string(entry.Name))
 		if err != nil {
 			logger.Warnf("bad entry as a subTrash: %s", entry.Name)
 			continue
+		}
+		if m.fmt.DirStats {
+			ds, st := m.GetDirStat(ctx, entry.Inode)
+			if st == 0 && ds != nil {
+				if _, err := scan(entry.Inode, uint64(ds.length), ts, ds.inodes); err != nil {
+					return errors.Wrap(err, "scan trash files")
+				}
+				continue
+			}
+			logger.Warnf("get dir stat %d: %s, fallback to readdir", entry.Inode, st)
 		}
 		subEntries = subEntries[:0]
 		if st = m.en.doReaddir(ctx, entry.Inode, 1, &subEntries, -1); st != 0 {
