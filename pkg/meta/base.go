@@ -2418,7 +2418,8 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 	nodeBar := progress.AddCountBar("Checked nodes", 0)
 
 	var hasError bool
-	needSyncVolumeStat := fpath == "/" && opt.Repair && opt.Recursive && opt.SyncDirStat
+	var trashWalkError bool
+	needSyncVolumeStat := fpath == "/" && opt.Repair && opt.SyncDirStat
 	seen := make(map[Ino]bool)
 	var volumeUsed, volumeInodes int64
 	recordStat := func(ino Ino, attr *Attr) {
@@ -2462,12 +2463,11 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 				if st := m.walk(ctx, TrashInode, "/.trash", &trashAttr, func(_ Context, ino Ino, _ string, a *Attr) {
 					recordStat(ino, a)
 				}); st != 0 {
-					hasError = true
+					trashWalkError = true
 					logger.Errorf("Walk /.trash: %s", st)
 				}
 			}
 		} else {
-			recordStat(inode, &attr)
 			nodes <- &node{inode, fpath, &attr}
 			count = 1
 		}
@@ -2616,7 +2616,7 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 		}()
 	}
 	wg.Wait()
-	if needSyncVolumeStat {
+	if needSyncVolumeStat && !trashWalkError {
 		if err := m.syncVolumeStat(ctx, volumeUsed, volumeInodes); err != nil {
 			logger.Errorf("Sync used space: %s", err)
 			hasError = true
