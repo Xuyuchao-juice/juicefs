@@ -2418,7 +2418,7 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 	nodeBar := progress.AddCountBar("Checked nodes", 0)
 
 	var hasError bool
-	var trashWalkError bool
+	var walkError bool
 	needSyncVolumeStat := fpath == "/" && opt.Repair && opt.SyncDirStat
 	seen := make(map[Ino]bool)
 	var volumeUsed, volumeInodes int64
@@ -2455,7 +2455,7 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 				nodes <- &node{inode, path, attr}
 				atomic.AddInt64(&count, 1)
 			}); st != 0 {
-				hasError = true
+				walkError = true
 				logger.Errorf("Walk %s: %s", fpath, st)
 			}
 			if needSyncVolumeStat && m.getFormat().TrashDays > 0 {
@@ -2463,7 +2463,7 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 				if st := m.walk(ctx, TrashInode, "/.trash", &trashAttr, func(_ Context, ino Ino, _ string, a *Attr) {
 					recordStat(ino, a)
 				}); st != 0 {
-					trashWalkError = true
+					walkError = true
 					logger.Errorf("Walk /.trash: %s", st)
 				}
 			}
@@ -2616,13 +2616,13 @@ func (m *baseMeta) Check(ctx Context, fpath string, opt *CheckOpt) error {
 		}()
 	}
 	wg.Wait()
-	if needSyncVolumeStat && !trashWalkError {
+	if needSyncVolumeStat && !walkError {
 		if err := m.syncVolumeStat(ctx, volumeUsed, volumeInodes); err != nil {
 			logger.Errorf("Sync used space: %s", err)
 			hasError = true
 		}
 	}
-	if hasError {
+	if hasError || walkError {
 		return errors.New("some errors occurred, please check the log of fsck")
 	}
 
