@@ -1442,9 +1442,6 @@ func parseIncludeRules(args []string) (rules []rule) {
 
 func filterKey(o object.Object, now time.Time, rules []rule, config *Config) bool {
 	var ok bool = true
-	if object.IsJuiceFSTempKey(o.Key()) {
-		return false
-	}
 	if !o.IsDir() && !o.IsSymlink() {
 		ok = o.Size() >= int64(config.MinSize) && o.Size() <= int64(config.MaxSize)
 		if ok && config.MaxAge > 0 {
@@ -1933,7 +1930,13 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 
 	if config.EnableCheckpoint && config.Manager == "" {
 		checkpointMgr = NewCheckpointManager(src, dst, config)
-		if ckpt, err := checkpointMgr.Load(); err == nil {
+		if config.CheckpointForceReset {
+			if err := checkpointMgr.DeleteCheckpoint(); err != nil && !errors.Is(err, os.ErrNotExist) {
+				logger.Warnf("Failed to delete existing checkpoint: %v", err)
+			}
+			checkpointMgr.Reset(config)
+			logger.Infof("Force reset checkpoint, starting fresh")
+		} else if ckpt, err := checkpointMgr.Load(); err == nil {
 			if checkpointMgr.ValidateConfig(config) {
 				if len(ckpt.PrefixState) > 0 || len(ckpt.SrcDelayDel) > 0 || len(ckpt.DstDelayDel) > 0 {
 					checkpoint = ckpt
@@ -2107,7 +2110,7 @@ func Sync(src, dst object.ObjectStorage, config *Config) error {
 				msg += fmt.Sprintf(", failed: %d", failed.Current())
 			}
 			if total-handled.Current()-extra.Current() > 0 {
-				msg += fmt.Sprintf(", lost: %d", total-handled.Current())
+				msg += fmt.Sprintf(", lost: %d", total-handled.Current()-extra.Current())
 			}
 			logger.Info(msg)
 
