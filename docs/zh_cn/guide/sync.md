@@ -366,3 +366,87 @@ juicefs sync cos://ABCDEFG:HIJKLMN@ccc-125000.cos.ap-beijing.myqcloud.com oss://
 ![sync via gateway](../images/sync-via-gateway.svg)
 
 阅读[「S3 网关」](./gateway.md)学习如何使用和部署 S3 网关。
+
+## 加密与解密 {#encryption-and-decryption}
+
+`juicefs sync` 支持在同步过程中进行端到端加密和解密。你可以在写入目标端前对明文数据加密、从源端解密已加密数据，或在不同密钥/算法之间进行重新加密。
+
+### 加密算法 {#encryption-algorithms}
+
+支持以下加密算法：
+
+| 算法 | 说明 |
+|------|------|
+| `aes256gcm-rsa` | AES-256-GCM 对称加密，使用 RSA 密钥加密数据密钥（默认） |
+| `chacha20-rsa` | ChaCha20-Poly1305 对称加密，使用 RSA 密钥加密数据密钥 |
+| `sm4gcm` | SM4-GCM 对称加密，使用 SM2 密钥加密数据密钥 |
+
+### 生成密钥对 {#generate-key-pair}
+
+使用 OpenSSL 生成 RSA 私钥（公钥内嵌于私钥文件中，JuiceFS 会自动提取）：
+
+```shell
+openssl genrsa -out private.pem 2048
+```
+
+生成带密码保护的私钥：
+
+```shell
+openssl genrsa -aes256 -out private.pem 2048
+```
+
+### 加密目标端 {#encrypt-destination}
+
+将明文数据同步到加密的目标存储：
+
+```shell
+juicefs sync /local/data s3://mybucket/backup \
+    --encrypt-rsa-key /path/to/private.pem \
+    --encrypt-algo aes256gcm-rsa
+```
+
+### 解密源端 {#decrypt-source}
+
+将加密的数据同步到明文目标：
+
+```shell
+juicefs sync s3://mybucket/backup /local/data \
+    --decrypt-rsa-key /path/to/private.pem \
+    --decrypt-algo aes256gcm-rsa
+```
+
+### 重新加密数据 {#re-encrypt-data}
+
+将加密数据从一个存储同步到另一个存储，可选择更换加密算法或密钥：
+
+```shell
+juicefs sync s3://old-bucket/encrypted s3://new-bucket/re-encrypted \
+    --decrypt-rsa-key /path/to/old-private.pem \
+    --decrypt-algo sm4gcm \
+    --encrypt-rsa-key /path/to/new-private.pem \
+    --encrypt-algo aes256gcm-rsa
+```
+
+### 密码保护的密钥 {#password-protected-keys}
+
+如果私钥有密码保护，在执行命令前设置对应的环境变量：
+
+- 指定 `--encrypt-rsa-key` 时使用 `JFS_ENCRYPT_RSA_PASSPHRASE`
+- 指定 `--decrypt-rsa-key` 时使用 `JFS_DECRYPT_RSA_PASSPHRASE`
+
+例如，使用带密码保护的密钥加密目标端：
+
+```shell
+export JFS_ENCRYPT_RSA_PASSPHRASE="your-password"
+
+juicefs sync /local/data s3://mybucket/backup \
+    --encrypt-rsa-key /path/to/encrypted-private.pem
+```
+
+### 技术细节 {#technical-details}
+
+- 数据以固定大小的分块进行加密（每块 1 MiB），支持随机读取而无需下载整个文件。
+- 每个分块包含 4 字节头部存储密文长度，后跟加密数据，并通过零填充补齐到固定分块大小。
+- 加密开销包括包装密钥、随机数和 AEAD 标签，具体大小取决于密钥类型和算法。
+- 加密后的文件在目标存储中不可读，对象存储中显示的文件大小会比原始明文大。
+- 在加密同步场景下，`--check-all` 和 `--check-new` 仍可使用，但会带来额外校验开销。
