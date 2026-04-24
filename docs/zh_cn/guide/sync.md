@@ -371,6 +371,8 @@ juicefs sync cos://ABCDEFG:HIJKLMN@ccc-125000.cos.ap-beijing.myqcloud.com oss://
 
 `juicefs sync` 支持在同步过程中进行端到端加密和解密。你可以在写入目标端前对明文数据加密、从源端解密已加密数据，或在不同密钥/算法之间进行重新加密。
 
+它的工作方式是：每个文件会按 1 MiB 分块处理，每块前面会带一个 4 字节头部记录密文长度，后面不足固定大小的部分会补零。这样做的好处是支持随机读取，不用每次都下载完整文件；代价是目标端看到的对象体积通常会比明文略大，而且内容不可直接阅读。`--check-all` 和 `--check-new` 也能继续用，不过整体耗时会更高。
+
 ### 加密算法 {#encryption-algorithms}
 
 支持以下加密算法：
@@ -422,7 +424,7 @@ juicefs sync s3://mybucket/backup /local/data \
 ```shell
 juicefs sync s3://old-bucket/encrypted s3://new-bucket/re-encrypted \
     --decrypt-rsa-key /path/to/old-private.pem \
-    --decrypt-algo sm4gcm \
+    --decrypt-algo aes256gcm-rsa \
     --encrypt-rsa-key /path/to/new-private.pem \
     --encrypt-algo aes256gcm-rsa
 ```
@@ -443,10 +445,3 @@ juicefs sync /local/data s3://mybucket/backup \
     --encrypt-rsa-key /path/to/encrypted-private.pem
 ```
 
-### 技术细节 {#technical-details}
-
-- 数据以固定大小的分块进行加密（每块 1 MiB），支持随机读取而无需下载整个文件。
-- 每个分块包含 4 字节头部存储密文长度，后跟加密数据，并通过零填充补齐到固定分块大小。
-- 加密开销包括包装密钥、随机数和 AEAD 标签，具体大小取决于密钥类型和算法。
-- 加密后的文件在目标存储中不可读，对象存储中显示的文件大小会比原始明文大。
-- 在加密同步场景下，`--check-all` 和 `--check-new` 仍可使用，但会带来额外校验开销。

@@ -366,6 +366,8 @@ Read [S3 Gateway](../guide/gateway.md) to learn its deployment and use.
 
 `juicefs sync` supports end-to-end encryption and decryption during synchronization. You can encrypt plaintext data before writing to the destination, decrypt encrypted data from the source, or perform re-encryption between different keys/algorithms.
 
+It works by processing each file in 1 MiB chunks. Every chunk starts with a 4-byte header that records ciphertext length, followed by the encrypted data. This design enables random reads without downloading an entire file. The trade-off is that objects on the destination appear larger than the original plaintext and are not human-readable. `--check-all` and `--check-new` can still be used, but with additional overhead.
+
 ### Encryption algorithms {#encryption-algorithms}
 
 The following encryption algorithms are supported:
@@ -417,7 +419,7 @@ Synchronize encrypted data from one storage to another, optionally changing the 
 ```shell
 juicefs sync s3://old-bucket/encrypted s3://new-bucket/re-encrypted \
     --decrypt-rsa-key /path/to/old-private.pem \
-    --decrypt-algo sm4gcm \
+    --decrypt-algo aes256gcm-rsa \
     --encrypt-rsa-key /path/to/new-private.pem \
     --encrypt-algo aes256gcm-rsa
 ```
@@ -438,10 +440,3 @@ juicefs sync /local/data s3://mybucket/backup \
     --encrypt-rsa-key /path/to/encrypted-private.pem
 ```
 
-### Technical details {#technical-details}
-
-- Data is encrypted in fixed-size chunks (1 MiB per chunk) to support random reads without downloading the entire file.
-- Each chunk has a 4-byte header storing the ciphertext length, followed by the encrypted data and zero padding to a fixed chunk size.
-- The encryption overhead includes the wrapped key, nonce, and AEAD tag. The exact size depends on the key type and algorithm.
-- Encrypted files are not human-readable on the destination storage. File sizes shown in object storage will be larger than the original plaintext sizes.
-- `--check-all` and `--check-new` can still be used with encrypted synchronization, but they add extra verification overhead.
