@@ -1242,6 +1242,7 @@ juicefs format \
 ```
 
 :::note 注意事项
+
 - `--storage` 可以设置为 `cifs` 或 `smb`，两者都支持。
 - `--bucket` 格式为 `<host>[:port]/<share>` 或 `cifs://<host>[:port]/<share>`，其中 `<share>` 是 SMB 共享名称。默认端口为 `445`。
 - `--access-key` 是 SMB 认证的用户名。
@@ -1249,6 +1250,7 @@ juicefs format \
 :::
 
 :::caution 限制
+
 - SMB 协议对 Unix 文件权限的支持有限。仅支持只读（0444）和可写（0666）两种模式，其他权限位会被忽略。
 - 符号链接不能像 POSIX 系统那样完全支持。
 - 要调整连接池大小，请设置 `JFS_CIFS_MAX_POOL` 环境变量（默认为 8）。

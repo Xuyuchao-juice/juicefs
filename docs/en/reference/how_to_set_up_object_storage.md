@@ -1286,6 +1286,7 @@ juicefs format \
 ```
 
 :::note Notes
+
 - `--storage` can be set to either `cifs` or `smb`, both are supported.
 - `--bucket` format is `<host>[:port]/<share>` or `cifs://<host>[:port]/<share>`, where `<share>` is the SMB share name. The default port is `445`.
 - `--access-key` is the username for SMB authentication.
@@ -1293,6 +1294,7 @@ juicefs format \
 :::
 
 :::caution Limitations
+
 - SMB protocol has limited support for Unix file permissions. Only read-only (0444) and writable (0666) modes are supported. Other permission bits are ignored.
 - Symbolic links are not fully supported like in POSIX systems.
 - To adjust the connection pool size, set the `JFS_CIFS_MAX_POOL` environment variable (default is 8).
