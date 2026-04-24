@@ -1271,9 +1271,9 @@ juicefs format  \
 
 ### CIFS/SMB {#cifs}
 
-CIFS/SMB (Common Internet File System / Server Message Block) is a network file-sharing protocol widely used in Windows environments. It allows computers within a network to access shared files and folders on remote servers.
+CIFS (Common Internet File System) and SMB (Server Message Block) are network file-sharing protocols widely used in Windows environments. They allow computers on a network to access shared files and folders on remote servers.
 
-JuiceFS supports using CIFS/SMB as the underlying data storage. This is useful when you have existing Windows file servers or NAS devices that support SMB protocol.
+JuiceFS supports using CIFS or SMB as the underlying data storage. This is useful when you have existing Windows file servers or NAS devices that support the SMB protocol.
 
 ```bash
 juicefs format \
@@ -1287,17 +1287,17 @@ juicefs format \
 
 :::note Notes
 
-- `--storage` can be set to either `cifs` or `smb`, both are supported.
-- `--bucket` format is `<host>[:port]/<share>` or `cifs://<host>[:port]/<share>`, where `<share>` is the SMB share name. The default port is `445`.
-- `--access-key` is the username for SMB authentication.
-- `--secret-key` is the password for SMB authentication.
+- `--storage` can be set to either `cifs` or `smb`. Both are supported.
+- The `--bucket` format is `<host>[:port]/<share>` or `cifs://<host>[:port]/<share>`, where `<share>` is the SMB share name. The default port is `445`.
+- `--access-key` specifies the username for SMB authentication.
+- `--secret-key` specifies the password for SMB authentication.
 :::
 
 :::caution Limitations
 
-- SMB protocol has limited support for Unix file permissions. Only read-only (0444) and writable (0666) modes are supported. Other permission bits are ignored.
-- Symbolic links are not fully supported like in POSIX systems.
-- To adjust the connection pool size, set the `JFS_CIFS_MAX_POOL` environment variable (default is 8).
+- The SMB protocol has limited support for Unix file permissions. Only read-only (0444) and writable (0666) modes are supported. Other permission bits are ignored.
+- Symbolic links are not fully supported as they are in POSIX systems.
+- To adjust the connection pool size, set the `JFS_CIFS_MAX_POOL` environment variable (`8` by default).
 :::
 
 ### NFS {#nfs}
