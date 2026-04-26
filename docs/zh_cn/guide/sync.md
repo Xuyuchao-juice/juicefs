@@ -378,7 +378,7 @@ juicefs sync cos://ABCDEFG:HIJKLMN@ccc-125000.cos.ap-beijing.myqcloud.com oss://
 支持以下加密算法：
 
 | 算法 | 说明 |
-|------|------|
+| ---- | ---- |
 | `aes256gcm-rsa` | AES-256-GCM 对称加密，使用 RSA 密钥加密数据密钥（默认） |
 | `chacha20-rsa` | ChaCha20-Poly1305 对称加密，使用 RSA 密钥加密数据密钥 |
 | `sm4gcm` | SM4-GCM 对称加密，使用 SM2 密钥加密数据密钥 |
@@ -444,4 +444,3 @@ export JFS_ENCRYPT_RSA_PASSPHRASE="your-password"
 juicefs sync /local/data s3://mybucket/backup \
     --encrypt-rsa-key /path/to/encrypted-private.pem
 ```
-

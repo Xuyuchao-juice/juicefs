@@ -373,7 +373,7 @@ It works by processing each file in 1 MiB chunks. Every chunk starts with a 4-by
 The following encryption algorithms are supported:
 
 | Algorithm | Description |
-|-----------|-------------|
+| ---- | ---- |
 | `aes256gcm-rsa` | AES-256-GCM symmetric encryption with RSA key encryption (default) |
 | `chacha20-rsa` | ChaCha20-Poly1305 symmetric encryption with RSA key encryption |
 | `sm4gcm` | SM4-GCM symmetric encryption with SM2 key encryption |
@@ -439,4 +439,3 @@ export JFS_ENCRYPT_RSA_PASSPHRASE="your-password"
 juicefs sync /local/data s3://mybucket/backup \
     --encrypt-rsa-key /path/to/encrypted-private.pem
 ```
-
