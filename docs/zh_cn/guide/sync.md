@@ -366,3 +366,81 @@ juicefs sync cos://ABCDEFG:HIJKLMN@ccc-125000.cos.ap-beijing.myqcloud.com oss://
 ![sync via gateway](../images/sync-via-gateway.svg)
 
 阅读[「S3 网关」](./gateway.md)学习如何使用和部署 S3 网关。
+
+## 加密与解密 {#encryption-and-decryption}
+
+`juicefs sync` 支持在同步过程中进行端到端加密和解密。你可以在写入目标端前对明文数据加密、从源端解密已加密数据，或在不同密钥/算法之间进行重新加密。
+
+它的工作方式是：每个文件会按 1 MiB 分块处理，每块前面会带一个 4 字节头部记录密文长度，后面不足固定大小的部分会补零。这样做的好处是支持随机读取，不用每次都下载完整文件；代价是目标端看到的对象体积通常会比明文略大，而且内容不可直接阅读。`--check-all` 和 `--check-new` 也能继续用，不过整体耗时会更高。
+
+### 加密算法 {#encryption-algorithms}
+
+支持以下加密算法：
+
+| 算法 | 说明 |
+| ---- | ---- |
+| `aes256gcm-rsa` | AES-256-GCM 对称加密，使用 RSA 密钥加密数据密钥（默认） |
+| `chacha20-rsa` | ChaCha20-Poly1305 对称加密，使用 RSA 密钥加密数据密钥 |
+| `sm4gcm` | SM4-GCM 对称加密，使用 SM2 密钥加密数据密钥 |
+
+### 生成密钥对 {#generate-key-pair}
+
+使用 OpenSSL 生成 RSA 私钥（公钥内嵌于私钥文件中，JuiceFS 会自动提取）：
+
+```shell
+openssl genrsa -out private.pem 2048
+```
+
+生成带密码保护的私钥：
+
+```shell
+openssl genrsa -aes256 -out private.pem 2048
+```
+
+### 加密目标端 {#encrypt-destination}
+
+将明文数据同步到加密的目标存储：
+
+```shell
+juicefs sync /local/data s3://mybucket/backup \
+    --encrypt-rsa-key /path/to/private.pem \
+    --encrypt-algo aes256gcm-rsa
+```
+
+### 解密源端 {#decrypt-source}
+
+将加密的数据同步到明文目标：
+
+```shell
+juicefs sync s3://mybucket/backup /local/data \
+    --decrypt-rsa-key /path/to/private.pem \
+    --decrypt-algo aes256gcm-rsa
+```
+
+### 重新加密数据 {#re-encrypt-data}
+
+将加密数据从一个存储同步到另一个存储，可选择更换加密算法或密钥：
+
+```shell
+juicefs sync s3://old-bucket/encrypted s3://new-bucket/re-encrypted \
+    --decrypt-rsa-key /path/to/old-private.pem \
+    --decrypt-algo aes256gcm-rsa \
+    --encrypt-rsa-key /path/to/new-private.pem \
+    --encrypt-algo aes256gcm-rsa
+```
+
+### 密码保护的密钥 {#password-protected-keys}
+
+如果私钥有密码保护，在执行命令前设置对应的环境变量：
+
+- 指定 `--encrypt-rsa-key` 时使用 `JFS_ENCRYPT_RSA_PASSPHRASE`
+- 指定 `--decrypt-rsa-key` 时使用 `JFS_DECRYPT_RSA_PASSPHRASE`
+
+例如，使用带密码保护的密钥加密目标端：
+
+```shell
+export JFS_ENCRYPT_RSA_PASSPHRASE="your-password"
+
+juicefs sync /local/data s3://mybucket/backup \
+    --encrypt-rsa-key /path/to/encrypted-private.pem
+```
